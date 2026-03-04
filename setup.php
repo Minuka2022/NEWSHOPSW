@@ -110,16 +110,25 @@ foreach (array_filter(array_map('trim', explode(';', $sql_tables))) as $sql) {
     }
 }
 
-// ── Seed categories (if empty) ────────────────────────────────────────────────────
+// ── Seed categories (if empty or force) ──────────────────────────────────────────
+$force = isset($_GET['force']);
 $cat_count = $conn->query("SELECT COUNT(*) as c FROM categories")->fetch_assoc()['c'];
-if ($cat_count == 0) {
+if ($cat_count == 0 || $force) {
+    $conn->query("DELETE FROM product_colors");
+    $conn->query("DELETE FROM order_items");
+    $conn->query("DELETE FROM products");
+    $conn->query("DELETE FROM customers");
+    $conn->query("DELETE FROM categories");
+    $conn->query("ALTER TABLE categories AUTO_INCREMENT=1");
+    $conn->query("ALTER TABLE products AUTO_INCREMENT=1");
+    $conn->query("ALTER TABLE customers AUTO_INCREMENT=1");
     $cats = ['Clothes', 'Bags', 'Tools', 'Accessories', 'Electronics', 'Other'];
     $stmt = $conn->prepare("INSERT INTO categories (name) VALUES (?)");
     foreach ($cats as $c) { $stmt->bind_param('s', $c); $stmt->execute(); }
     $success[] = 'Sample categories added';
 }
 
-// ── Seed customers (if empty) ─────────────────────────────────────────────────────
+// ── Seed customers ────────────────────────────────────────────────────────────────
 $cust_count = $conn->query("SELECT COUNT(*) as c FROM customers")->fetch_assoc()['c'];
 if ($cust_count == 0) {
     $customers = [
@@ -134,7 +143,7 @@ if ($cust_count == 0) {
     $success[] = 'Sample customers added';
 }
 
-// ── Seed products (if empty) ──────────────────────────────────────────────────────
+// ── Seed products ─────────────────────────────────────────────────────────────────
 $prod_count = $conn->query("SELECT COUNT(*) as c FROM products")->fetch_assoc()['c'];
 if ($prod_count == 0) {
     // Look up category IDs dynamically so they work regardless of insertion order
@@ -212,9 +221,11 @@ if ($color_count == 0) {
       <?php endif; ?>
 
       <?php if (!$errors): ?>
-        <div class="d-flex gap-2 mt-3">
+        <div class="d-flex gap-2 mt-3 flex-wrap">
           <a href="<?= BASE_URL ?>/index.php" class="btn btn-primary">&#128640; Open ShopSW Manager</a>
           <a href="<?= BASE_URL ?>/setup.php?check=1" class="btn btn-outline-secondary" target="_blank">Check DB Status</a>
+          <a href="<?= BASE_URL ?>/setup.php?force=1" class="btn btn-outline-danger"
+             onclick="return confirm('This will DELETE all sample data and re-seed. Continue?')">&#128260; Re-seed Sample Data</a>
         </div>
       <?php endif; ?>
     </div>
