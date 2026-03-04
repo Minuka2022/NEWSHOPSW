@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS product_colors (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     product_id INT NOT NULL,
     color_name VARCHAR(100) NOT NULL,
+    stock      INT NOT NULL DEFAULT 0,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 );
 
@@ -109,6 +110,11 @@ foreach (array_filter(array_map('trim', explode(';', $sql_tables))) as $sql) {
         }
     }
 }
+
+// ── Column migrations (safe to run on every visit) ────────────────────────────────
+$conn->query("ALTER TABLE order_items    ADD COLUMN IF NOT EXISTS color VARCHAR(100) DEFAULT NULL AFTER total_price");
+$conn->query("ALTER TABLE product_colors ADD COLUMN IF NOT EXISTS stock INT NOT NULL DEFAULT 0   AFTER color_name");
+$success[] = 'Column migrations applied';
 
 // ── Seed categories (if empty or force) ──────────────────────────────────────────
 $force = isset($_GET['force']);
@@ -174,11 +180,12 @@ $color_count = $conn->query("SELECT COUNT(*) as c FROM product_colors")->fetch_a
 if ($color_count == 0) {
     $bagRows   = $conn->query("SELECT p.id FROM products p JOIN categories c ON c.id=p.category_id WHERE c.name='Bags' AND p.active=1");
     $bagColors = ['Red','Blue','Black','Brown','Green','Purple','Pink'];
-    $stmtC     = $conn->prepare("INSERT INTO product_colors (product_id, color_name) VALUES (?,?)");
+    $stmtC     = $conn->prepare("INSERT INTO product_colors (product_id, color_name, stock) VALUES (?,?,?)");
     $added = 0;
     while ($br = $bagRows->fetch_assoc()) {
         foreach ($bagColors as $col) {
-            $stmtC->bind_param('is', $br['id'], $col);
+            $defaultStock = 5;
+            $stmtC->bind_param('isi', $br['id'], $col, $defaultStock);
             $stmtC->execute();
             $added++;
         }

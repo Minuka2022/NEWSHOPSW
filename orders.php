@@ -12,17 +12,27 @@ if ($action === 'product_search') {
     header('Content-Type: application/json');
     $q = sanitize($conn, $_GET['q'] ?? '');
     try {
+        // Include products that have stock OR have any color with stock > 0
         $r = $conn->query("
             SELECT p.id, p.name, p.price, p.stock, p.unit,
-                   GROUP_CONCAT(pc.color_name ORDER BY pc.color_name SEPARATOR '||') AS colors
+                   GROUP_CONCAT(CONCAT(pc.color_name,':',pc.stock) ORDER BY pc.color_name SEPARATOR '||') AS colors_raw
             FROM products p
-            LEFT JOIN product_colors pc ON pc.product_id = p.id
-            WHERE p.active=1 AND p.stock>0 AND (p.name LIKE '%$q%' OR p.sku LIKE '%$q%')
+            LEFT JOIN product_colors pc ON pc.product_id = p.id AND pc.stock > 0
+            WHERE p.active=1
+              AND (p.name LIKE '%$q%' OR p.sku LIKE '%$q%')
+              AND (p.stock > 0 OR EXISTS (SELECT 1 FROM product_colors x WHERE x.product_id=p.id AND x.stock>0))
             GROUP BY p.id LIMIT 10
         ");
         $prods = [];
         while ($row = $r->fetch_assoc()) {
-            $row['colors'] = $row['colors'] ? explode('||', $row['colors']) : [];
+            $row['colors'] = [];
+            if ($row['colors_raw']) {
+                foreach (explode('||', $row['colors_raw']) as $cs) {
+                    [$cname, $cstock] = explode(':', $cs, 2);
+                    $row['colors'][] = ['name' => $cname, 'stock' => (int)$cstock];
+                }
+            }
+            unset($row['colors_raw']);
             $prods[] = $row;
         }
     } catch (Exception $e) {
@@ -86,14 +96,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
         $stmt->execute();
         $order_id = $conn->insert_id;
 
-        $stmt2 = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?)");
-        $stmt3 = $conn->prepare("UPDATE products SET stock=stock-? WHERE id=? AND stock>=?");
+        $stmt2  = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?)");
+        $stmt3  = $conn->prepare("UPDATE products       SET stock=stock-? WHERE id=?          AND stock>=?");
+        $stmt3c = $conn->prepare("UPDATE product_colors SET stock=stock-? WHERE product_id=? AND color_name=? AND stock>=?");
 
         foreach ($items as [$pid, $qty, $up, $tp, $color]) {
             $stmt2->bind_param('iiiidds', $order_id, $pid, $pid, $qty, $up, $tp, $color);
             $stmt2->execute();
-            $stmt3->bind_param('iii', $qty, $pid, $qty);
-            $stmt3->execute();
+            if ($color) {
+                // Decrement per-color stock
+                $stmt3c->bind_param('iisi', $qty, $pid, $color, $qty);
+                $stmt3c->execute();
+            } else {
+                // Decrement main product stock
+                $stmt3->bind_param('iii', $qty, $pid, $qty);
+                $stmt3->execute();
+            }
         }
 
         $conn->commit();
@@ -255,7 +273,9 @@ function addItem(id, name, price, colors) {
         var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Color\u2026";
         colorSel.appendChild(blank);
         colors.forEach(function(c) {
-            var opt = document.createElement("option"); opt.value = c; opt.textContent = c;
+            var opt = document.createElement("option");
+            opt.value = c.name;
+            opt.textContent = c.name + " (" + c.stock + ")";
             colorSel.appendChild(opt);
         });
         colorWrap.appendChild(colorSel);
@@ -346,7 +366,7 @@ document.getElementById("productSearch").addEventListener("input", function() {
                     el.dataset.name   = p.name;
                     el.dataset.colors = JSON.stringify(p.colors || []);
                     var colorBadge = p.colors && p.colors.length
-                        ? " <span class='badge bg-info text-dark'>" + p.colors.length + " colors</span>" : "";
+                        ? " <span class='badge bg-info text-dark'>" + p.colors.map(function(c){return c.name+"("+c.stock+")"}).join(", ") + "</span>" : "";
                     el.innerHTML = "<b>" + p.name + "</b> &mdash; " + CURRENCY +
                                    parseFloat(p.price).toFixed(2) +
                                    " <span class='text-muted'>(Stock: " + p.stock + " " + p.unit + ")</span>" +
