@@ -1,10 +1,13 @@
 <?php
-$pageTitle = 'Orders';
-require_once 'includes/header.php';
+// Bootstrap without HTML output
+if (session_status() === PHP_SESSION_NONE) session_start();
+require_once 'config.php';
+require_once 'includes/db.php';
+require_once 'includes/functions.php';
 
 $action = $_GET['action'] ?? 'list';
 
-// ── AJAX: product search for autocomplete ─────────────────────────────────────────
+// ── AJAX: product search ── (must be before ANY HTML output) ──────────────────────
 if ($action === 'product_search') {
     header('Content-Type: application/json');
     $q = sanitize($conn, $_GET['q'] ?? '');
@@ -23,19 +26,15 @@ if ($action === 'product_search') {
             $prods[] = $row;
         }
     } catch (Exception $e) {
-        // product_colors table may not exist yet — fall back to simple search
         $r = $conn->query("SELECT id,name,price,stock,unit FROM products WHERE active=1 AND stock>0 AND (name LIKE '%$q%' OR sku LIKE '%$q%') LIMIT 10");
         $prods = [];
-        while ($row = $r->fetch_assoc()) {
-            $row['colors'] = [];
-            $prods[] = $row;
-        }
+        while ($row = $r->fetch_assoc()) { $row['colors'] = []; $prods[] = $row; }
     }
     echo json_encode($prods);
     exit;
 }
 
-// ── Status update from list ────────────────────────────────────────────────────────
+// ── Status update ─────────────────────────────────────────────────────────────────
 if ($action === 'update_status' && isset($_GET['id'], $_GET['status'])) {
     $oid    = (int)$_GET['id'];
     $status = sanitize($conn, $_GET['status']);
@@ -47,24 +46,22 @@ if ($action === 'update_status' && isset($_GET['id'], $_GET['status'])) {
     redirect(BASE_URL . '/orders.php');
 }
 
-// ── Save new order ─────────────────────────────────────────────────────────────────
+// ── Save new order ────────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
-    $cust_id  = (int)($_POST['customer_id'] ?? 0) ?: 'NULL';
-    $ship_addr= sanitize($conn, $_POST['shipping_address'] ?? '');
-    $notes    = sanitize($conn, $_POST['notes'] ?? '');
-    $discount = (float)($_POST['discount'] ?? 0);
-
-    $prod_ids  = $_POST['product_id']  ?? [];
-    $quantities= $_POST['quantity']    ?? [];
-    $prices    = $_POST['unit_price']  ?? [];
-    $item_colors = $_POST['item_color'] ?? [];
+    $cust_id     = (int)($_POST['customer_id'] ?? 0) ?: 'NULL';
+    $ship_addr   = sanitize($conn, $_POST['shipping_address'] ?? '');
+    $notes       = sanitize($conn, $_POST['notes'] ?? '');
+    $discount    = (float)($_POST['discount'] ?? 0);
+    $prod_ids    = $_POST['product_id']  ?? [];
+    $quantities  = $_POST['quantity']    ?? [];
+    $prices      = $_POST['unit_price']  ?? [];
+    $item_colors = $_POST['item_color']  ?? [];
 
     if (empty($prod_ids) || count(array_filter($quantities)) === 0) {
         flash('danger', 'Please add at least one item to the order.');
         redirect(BASE_URL . '/orders.php?action=new');
     }
 
-    // Calculate totals
     $subtotal = 0;
     $items    = [];
     foreach ($prod_ids as $idx => $pid) {
@@ -79,8 +76,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
         }
     }
 
-    $total       = max(0, $subtotal - $discount);
-    $order_num   = generateOrderNumber($conn);
+    $total     = max(0, $subtotal - $discount);
+    $order_num = generateOrderNumber($conn);
 
     $conn->begin_transaction();
     try {
@@ -109,14 +106,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
     }
 }
 
-// ── New Order Form ─────────────────────────────────────────────────────────────────
+// ── From here on we need HTML ─────────────────────────────────────────────────────
+$pageTitle = 'Orders';
+require_once 'includes/header.php';
+
+// ── New Order Form ────────────────────────────────────────────────────────────────
 if ($action === 'new') {
     $customers = $conn->query("SELECT id,name,phone,address FROM customers ORDER BY name")->fetch_all(MYSQLI_ASSOC);
     $selCust   = (int)($_GET['customer_id'] ?? 0);
     $custData  = [];
     if ($selCust) {
         $r = $conn->query("SELECT * FROM customers WHERE id=$selCust LIMIT 1");
-        if($r->num_rows) $custData = $r->fetch_assoc();
+        if ($r->num_rows) $custData = $r->fetch_assoc();
     }
     ?>
     <div class="container-fluid">
@@ -193,14 +194,11 @@ if ($action === 'new') {
                 </button>
               </div>
               <div class="card-body">
-                <!-- Product Search -->
                 <div class="mb-3 position-relative">
                   <input type="text" id="productSearch" class="form-control" placeholder="&#128269; Type product name to search and add...">
                   <div id="searchDropdown" class="position-absolute w-100 bg-white border rounded shadow-sm" style="top:100%;z-index:999;display:none;max-height:220px;overflow-y:auto"></div>
                 </div>
-
                 <div id="orderItems">
-                  <!-- Items added here -->
                   <div class="text-center text-muted py-5" id="emptyMsg">
                     <i class="fas fa-box-open fa-2x mb-2"></i><br>Search products above to add items
                   </div>
@@ -233,31 +231,28 @@ function addItem(id, name, price, colors) {
     var div = document.createElement("div");
     div.className = "order-item-row d-flex align-items-center gap-2 mb-1";
 
-    var hiddenId  = document.createElement("input");
+    var hiddenId = document.createElement("input");
     hiddenId.type = "hidden"; hiddenId.name = "product_id[]"; hiddenId.value = id;
 
-    var nameWrap  = document.createElement("div");
-    nameWrap.className = "flex-grow-1";
+    var nameWrap  = document.createElement("div"); nameWrap.className = "flex-grow-1";
     var nameInput = document.createElement("input");
     nameInput.type = "text"; nameInput.className = "form-control form-control-sm";
     nameInput.value = name; nameInput.readOnly = true;
     nameWrap.appendChild(nameInput);
 
-    var qtyWrap   = document.createElement("div"); qtyWrap.style.width = "80px";
-    var qtyInput  = document.createElement("input");
+    var qtyWrap  = document.createElement("div"); qtyWrap.style.width = "80px";
+    var qtyInput = document.createElement("input");
     qtyInput.type = "number"; qtyInput.name = "quantity[]";
     qtyInput.className = "form-control form-control-sm qty";
     qtyInput.min = "1"; qtyInput.value = "1"; qtyInput.required = true;
     qtyInput.addEventListener("input", function(){ updateRow(this); });
     qtyWrap.appendChild(qtyInput);
 
-    // Color selector (shown only if product has colors)
     var colorWrap = document.createElement("div"); colorWrap.style.width = "120px";
     if (colors.length > 0) {
         var colorSel = document.createElement("select");
-        colorSel.name = "item_color[]";
-        colorSel.className = "form-select form-select-sm";
-        var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Color…";
+        colorSel.name = "item_color[]"; colorSel.className = "form-select form-select-sm";
+        var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Color\u2026";
         colorSel.appendChild(blank);
         colors.forEach(function(c) {
             var opt = document.createElement("option"); opt.value = c; opt.textContent = c;
@@ -265,9 +260,9 @@ function addItem(id, name, price, colors) {
         });
         colorWrap.appendChild(colorSel);
     } else {
-        var hiddenColor = document.createElement("input");
-        hiddenColor.type = "hidden"; hiddenColor.name = "item_color[]"; hiddenColor.value = "";
-        colorWrap.appendChild(hiddenColor);
+        var hc = document.createElement("input");
+        hc.type = "hidden"; hc.name = "item_color[]"; hc.value = "";
+        colorWrap.appendChild(hc);
     }
 
     var priceWrap = document.createElement("div"); priceWrap.style.width = "110px";
@@ -281,19 +276,18 @@ function addItem(id, name, price, colors) {
     ig.appendChild(igSpan); ig.appendChild(upInput);
     priceWrap.appendChild(ig);
 
-    var totalDiv  = document.createElement("div");
+    var totalDiv = document.createElement("div");
     totalDiv.style.width = "90px"; totalDiv.className = "text-end fw-600 rowtotal";
     totalDiv.textContent = CURRENCY + price.toFixed(2);
 
-    var delBtn    = document.createElement("button");
+    var delBtn = document.createElement("button");
     delBtn.type = "button"; delBtn.className = "btn btn-sm btn-outline-danger";
     delBtn.innerHTML = "&times;";
     delBtn.addEventListener("click", function(){ removeItem(this); });
 
     div.appendChild(hiddenId); div.appendChild(nameWrap);
     div.appendChild(qtyWrap);  div.appendChild(colorWrap);
-    div.appendChild(priceWrap);
-    div.appendChild(totalDiv); div.appendChild(delBtn);
+    div.appendChild(priceWrap); div.appendChild(totalDiv); div.appendChild(delBtn);
 
     document.getElementById("orderItems").appendChild(div);
     document.getElementById("emptyMsg").style.display = "none";
@@ -326,7 +320,6 @@ function calcTotal() {
     document.getElementById("summTotal").textContent    = CURRENCY + total.toFixed(2);
 }
 
-// Product search autocomplete using data attributes (no inline handlers)
 var searchTimer;
 document.getElementById("productSearch").addEventListener("input", function() {
     clearTimeout(searchTimer);
@@ -353,15 +346,15 @@ document.getElementById("productSearch").addEventListener("input", function() {
                     el.dataset.name   = p.name;
                     el.dataset.colors = JSON.stringify(p.colors || []);
                     var colorBadge = p.colors && p.colors.length
-                        ? " <span class='badge bg-info text-dark'>" + p.colors.length + " colors</span>"
-                        : "";
+                        ? " <span class='badge bg-info text-dark'>" + p.colors.length + " colors</span>" : "";
                     el.innerHTML = "<b>" + p.name + "</b> &mdash; " + CURRENCY +
                                    parseFloat(p.price).toFixed(2) +
                                    " <span class='text-muted'>(Stock: " + p.stock + " " + p.unit + ")</span>" +
                                    colorBadge;
                     el.addEventListener("mousedown", function() {
-                        var cols = JSON.parse(this.dataset.colors || "[]");
-                        selectProduct(this.dataset.id, this.dataset.name, parseFloat(this.dataset.price), cols);
+                        selectProduct(this.dataset.id, this.dataset.name,
+                                      parseFloat(this.dataset.price),
+                                      JSON.parse(this.dataset.colors || "[]"));
                     });
                     dd.appendChild(el);
                 });
@@ -390,7 +383,7 @@ if (custSel && custSel.value) fillAddress(custSel);
     exit;
 }
 
-// ── Order List ─────────────────────────────────────────────────────────────────────
+// ── Order List ────────────────────────────────────────────────────────────────────
 $statusFilter = sanitize($conn, $_GET['status'] ?? '');
 $search       = sanitize($conn, $_GET['q']      ?? '');
 
@@ -414,7 +407,6 @@ foreach (['pending','processing','shipped','delivered','cancelled'] as $st) {
 ?>
 <div class="container-fluid">
 
-  <!-- Status tabs -->
   <div class="d-flex gap-2 flex-wrap mb-3">
     <a href="orders.php" class="btn btn-sm <?= !$statusFilter?'btn-dark':'btn-outline-secondary' ?>">All</a>
     <?php foreach($statusCounts as $st => $cnt): ?>
@@ -424,7 +416,7 @@ foreach (['pending','processing','shipped','delivered','cancelled'] as $st) {
       </a>
     <?php endforeach; ?>
     <form class="d-flex gap-2 ms-auto" method="GET">
-      <?php if($statusFilter): ?><input type="hidden" name="status" value="<?= $statusFilter ?>"> <?php endif; ?>
+      <?php if($statusFilter): ?><input type="hidden" name="status" value="<?= $statusFilter ?>"><?php endif; ?>
       <input type="text" name="q" class="form-control form-control-sm" style="width:200px" placeholder="Search order # or customer..." value="<?= htmlspecialchars($search) ?>">
       <button class="btn btn-primary btn-sm">Go</button>
     </form>
