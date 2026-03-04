@@ -1,0 +1,10 @@
+# Local config overrides
+config.local.php
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
