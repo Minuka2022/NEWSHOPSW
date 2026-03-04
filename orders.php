@@ -7,9 +7,19 @@ $action = $_GET['action'] ?? 'list';
 // ── AJAX: product search for autocomplete ─────────────────────────────────────────
 if ($action === 'product_search') {
     $q = sanitize($conn, $_GET['q'] ?? '');
-    $r = $conn->query("SELECT id,name,price,stock,unit FROM products WHERE active=1 AND stock>0 AND (name LIKE '%$q%' OR sku LIKE '%$q%') LIMIT 10");
+    $r = $conn->query("
+        SELECT p.id, p.name, p.price, p.stock, p.unit,
+               GROUP_CONCAT(pc.color_name ORDER BY pc.color_name SEPARATOR '||') AS colors
+        FROM products p
+        LEFT JOIN product_colors pc ON pc.product_id = p.id
+        WHERE p.active=1 AND p.stock>0 AND (p.name LIKE '%$q%' OR p.sku LIKE '%$q%')
+        GROUP BY p.id LIMIT 10
+    ");
     $prods = [];
-    while($row = $r->fetch_assoc()) $prods[] = $row;
+    while($row = $r->fetch_assoc()) {
+        $row['colors'] = $row['colors'] ? explode('||', $row['colors']) : [];
+        $prods[] = $row;
+    }
     header('Content-Type: application/json');
     echo json_encode($prods);
     exit;
@@ -37,6 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
     $prod_ids  = $_POST['product_id']  ?? [];
     $quantities= $_POST['quantity']    ?? [];
     $prices    = $_POST['unit_price']  ?? [];
+    $item_colors = $_POST['item_color'] ?? [];
 
     if (empty($prod_ids) || count(array_filter($quantities)) === 0) {
         flash('danger', 'Please add at least one item to the order.');
@@ -47,13 +58,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
     $subtotal = 0;
     $items    = [];
     foreach ($prod_ids as $idx => $pid) {
-        $pid = (int)$pid;
-        $qty = (int)($quantities[$idx] ?? 0);
-        $up  = (float)($prices[$idx]  ?? 0);
+        $pid   = (int)$pid;
+        $qty   = (int)($quantities[$idx]   ?? 0);
+        $up    = (float)($prices[$idx]     ?? 0);
+        $color = sanitize($conn, $item_colors[$idx] ?? '');
         if ($pid && $qty > 0) {
             $tp = $qty * $up;
             $subtotal += $tp;
-            $items[] = [$pid, $qty, $up, $tp];
+            $items[] = [$pid, $qty, $up, $tp, $color];
         }
     }
 
@@ -67,11 +79,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
         $stmt->execute();
         $order_id = $conn->insert_id;
 
-        $stmt2 = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?)");
+        $stmt2 = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?)");
         $stmt3 = $conn->prepare("UPDATE products SET stock=stock-? WHERE id=? AND stock>=?");
 
-        foreach ($items as [$pid, $qty, $up, $tp]) {
-            $stmt2->bind_param('iiidd',  $order_id, $pid, $pid, $qty, $up, $tp);
+        foreach ($items as [$pid, $qty, $up, $tp, $color]) {
+            $stmt2->bind_param('iiiidds', $order_id, $pid, $pid, $qty, $up, $tp, $color);
             $stmt2->execute();
             $stmt3->bind_param('iii', $qty, $pid, $qty);
             $stmt3->execute();
@@ -202,13 +214,14 @@ function fillAddress(sel) {
     document.getElementById("shipAddr").value = opt.getAttribute("data-address") || "";
 }
 
-function addItem(id, name, price) {
-    id    = id    || 0;
-    name  = name  || "";
-    price = parseFloat(price) || 0;
+function addItem(id, name, price, colors) {
+    id     = id    || 0;
+    name   = name  || "";
+    price  = parseFloat(price) || 0;
+    colors = colors || [];
 
     var div = document.createElement("div");
-    div.className = "order-item-row d-flex align-items-center gap-2";
+    div.className = "order-item-row d-flex align-items-center gap-2 mb-1";
 
     var hiddenId  = document.createElement("input");
     hiddenId.type = "hidden"; hiddenId.name = "product_id[]"; hiddenId.value = id;
@@ -227,6 +240,25 @@ function addItem(id, name, price) {
     qtyInput.min = "1"; qtyInput.value = "1"; qtyInput.required = true;
     qtyInput.addEventListener("input", function(){ updateRow(this); });
     qtyWrap.appendChild(qtyInput);
+
+    // Color selector (shown only if product has colors)
+    var colorWrap = document.createElement("div"); colorWrap.style.width = "120px";
+    if (colors.length > 0) {
+        var colorSel = document.createElement("select");
+        colorSel.name = "item_color[]";
+        colorSel.className = "form-select form-select-sm";
+        var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Color…";
+        colorSel.appendChild(blank);
+        colors.forEach(function(c) {
+            var opt = document.createElement("option"); opt.value = c; opt.textContent = c;
+            colorSel.appendChild(opt);
+        });
+        colorWrap.appendChild(colorSel);
+    } else {
+        var hiddenColor = document.createElement("input");
+        hiddenColor.type = "hidden"; hiddenColor.name = "item_color[]"; hiddenColor.value = "";
+        colorWrap.appendChild(hiddenColor);
+    }
 
     var priceWrap = document.createElement("div"); priceWrap.style.width = "110px";
     var ig        = document.createElement("div"); ig.className = "input-group input-group-sm";
@@ -249,7 +281,8 @@ function addItem(id, name, price) {
     delBtn.addEventListener("click", function(){ removeItem(this); });
 
     div.appendChild(hiddenId); div.appendChild(nameWrap);
-    div.appendChild(qtyWrap);  div.appendChild(priceWrap);
+    div.appendChild(qtyWrap);  div.appendChild(colorWrap);
+    div.appendChild(priceWrap);
     div.appendChild(totalDiv); div.appendChild(delBtn);
 
     document.getElementById("orderItems").appendChild(div);
@@ -304,14 +337,20 @@ document.getElementById("productSearch").addEventListener("input", function() {
                     var el = document.createElement("div");
                     el.className = "px-3 py-2 small border-bottom";
                     el.style.cursor = "pointer";
-                    el.dataset.id    = p.id;
-                    el.dataset.price = p.price;
-                    el.dataset.name  = p.name;
+                    el.dataset.id     = p.id;
+                    el.dataset.price  = p.price;
+                    el.dataset.name   = p.name;
+                    el.dataset.colors = JSON.stringify(p.colors || []);
+                    var colorBadge = p.colors && p.colors.length
+                        ? " <span class='badge bg-info text-dark'>" + p.colors.length + " colors</span>"
+                        : "";
                     el.innerHTML = "<b>" + p.name + "</b> &mdash; " + CURRENCY +
                                    parseFloat(p.price).toFixed(2) +
-                                   " <span class='text-muted'>(Stock: " + p.stock + " " + p.unit + ")</span>";
+                                   " <span class='text-muted'>(Stock: " + p.stock + " " + p.unit + ")</span>" +
+                                   colorBadge;
                     el.addEventListener("mousedown", function() {
-                        selectProduct(this.dataset.id, this.dataset.name, parseFloat(this.dataset.price));
+                        var cols = JSON.parse(this.dataset.colors || "[]");
+                        selectProduct(this.dataset.id, this.dataset.name, parseFloat(this.dataset.price), cols);
                     });
                     dd.appendChild(el);
                 });
@@ -320,8 +359,8 @@ document.getElementById("productSearch").addEventListener("input", function() {
     }, 250);
 });
 
-function selectProduct(id, name, price) {
-    addItem(id, name, price);
+function selectProduct(id, name, price, colors) {
+    addItem(id, name, price, colors || []);
     document.getElementById("productSearch").value = "";
     document.getElementById("searchDropdown").style.display = "none";
 }
@@ -379,6 +418,7 @@ foreach (['pending','processing','shipped','delivered','cancelled'] as $st) {
       <button class="btn btn-primary btn-sm">Go</button>
     </form>
     <a href="orders.php?action=new" class="btn btn-success btn-sm"><i class="fas fa-plus me-1"></i>New Order</a>
+    <a href="print_stickers.php" class="btn btn-warning btn-sm" target="_blank"><i class="fas fa-tags me-1"></i>Print Pending Labels</a>
   </div>
 
   <div class="card">

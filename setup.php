@@ -85,8 +85,16 @@ CREATE TABLE IF NOT EXISTS order_items (
     quantity     INT NOT NULL DEFAULT 1,
     unit_price   DECIMAL(10,2) NOT NULL,
     total_price  DECIMAL(10,2) NOT NULL,
+    color        VARCHAR(100) DEFAULT NULL,
     FOREIGN KEY (order_id)   REFERENCES orders(id)   ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS product_colors (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    product_id INT NOT NULL,
+    color_name VARCHAR(100) NOT NULL,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 );
 
 ";
@@ -135,10 +143,22 @@ if ($cat_count == 0) {
     ];
     $stmt3 = $conn->prepare("INSERT INTO products (category_id, name, sku, description, price, cost, stock) VALUES (?,?,?,?,?,?,?)");
     foreach ($prods as $p) {
-        $stmt3->bind_param('isssddl', $p[0], $p[1], $p[2], $p[3], $p[4], $p[5], $p[6]);
+        $stmt3->bind_param('isssddi', $p[0], $p[1], $p[2], $p[3], $p[4], $p[5], $p[6]);
         $stmt3->execute();
     }
     $success[] = 'Sample products added (8 products)';
+
+    // Sample colors for bag products
+    $bagRows = $conn->query("SELECT id FROM products WHERE category_id=(SELECT id FROM categories WHERE name='Bags') AND active=1");
+    $bagColors = ['Red','Blue','Black','Brown','Green','Purple','Pink'];
+    $stmtC = $conn->prepare("INSERT INTO product_colors (product_id, color_name) VALUES (?,?)");
+    while ($br = $bagRows->fetch_assoc()) {
+        foreach ($bagColors as $col) {
+            $stmtC->bind_param('is', $br['id'], $col);
+            $stmtC->execute();
+        }
+    }
+    $success[] = 'Sample colors added for bag products';
 }
 
 ?>

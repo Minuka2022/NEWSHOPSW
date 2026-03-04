@@ -5,6 +5,27 @@ require_once 'includes/header.php';
 $action = $_GET['action'] ?? 'list';
 $id     = (int)($_GET['id'] ?? 0);
 
+// ── Add color to product ─────────────────────────────────────────────────────────
+if ($action === 'add_color' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    $pid   = (int)($_POST['product_id'] ?? 0);
+    $color = sanitize($conn, trim($_POST['color_name'] ?? ''));
+    if ($pid && $color) {
+        $stmt = $conn->prepare("INSERT INTO product_colors (product_id, color_name) VALUES (?,?)");
+        $stmt->bind_param('is', $pid, $color);
+        $stmt->execute();
+        flash('success', "Color \"$color\" added.");
+    }
+    redirect(BASE_URL . "/products.php?action=edit&id=$pid");
+}
+
+// ── Delete color ─────────────────────────────────────────────────────────────────
+if ($action === 'delete_color' && $id) {
+    $row = $conn->query("SELECT product_id FROM product_colors WHERE id=$id LIMIT 1")->fetch_assoc();
+    $conn->query("DELETE FROM product_colors WHERE id=$id");
+    flash('success', 'Color removed.');
+    redirect(BASE_URL . "/products.php?action=edit&id=" . ($row['product_id'] ?? ''));
+}
+
 // ── Delete ──────────────────────────────────────────────────────────────────────
 if ($action === 'delete' && $id) {
     $stmt = $conn->prepare("UPDATE products SET active=0 WHERE id=?");
@@ -130,6 +151,34 @@ if ($action === 'add' || $action === 'edit') {
           </div>
         </div>
         <div class="col-lg-5">
+          <?php if ($action === 'edit' && $prod['id']): ?>
+          <div class="card mb-3">
+            <div class="card-header"><i class="fas fa-palette me-2"></i>Product Colors <small class="text-muted">(for variants like bags)</small></div>
+            <div class="card-body">
+              <?php $colors = $conn->query("SELECT * FROM product_colors WHERE product_id={$prod['id']} ORDER BY color_name")->fetch_all(MYSQLI_ASSOC); ?>
+              <?php if ($colors): ?>
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                  <?php foreach ($colors as $c): ?>
+                    <span class="badge bg-secondary d-flex align-items-center gap-1" style="font-size:.85rem;padding:6px 10px">
+                      <?= htmlspecialchars($c['color_name']) ?>
+                      <a href="products.php?action=delete_color&id=<?= $c['id'] ?>"
+                         class="text-white ms-1" style="text-decoration:none;line-height:1"
+                         onclick="return confirm('Remove this color?')">&times;</a>
+                    </span>
+                  <?php endforeach; ?>
+                </div>
+              <?php else: ?>
+                <p class="text-muted small mb-3">No colors added yet.</p>
+              <?php endif; ?>
+              <form method="POST" action="products.php?action=add_color" class="d-flex gap-2">
+                <input type="hidden" name="product_id" value="<?= $prod['id'] ?>">
+                <input type="text" name="color_name" class="form-control form-control-sm"
+                       placeholder="e.g. Red, Blue, Purple…" required style="max-width:180px">
+                <button type="submit" class="btn btn-success btn-sm"><i class="fas fa-plus me-1"></i>Add</button>
+              </form>
+            </div>
+          </div>
+          <?php endif; ?>
           <div class="card">
             <div class="card-header">Manage Categories</div>
             <div class="card-body">

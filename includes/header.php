@@ -47,6 +47,12 @@ $currentPage = basename($_SERVER['PHP_SELF']);
       <i class="fas fa-users"></i> Customers
     </a>
     <hr class="sidebar-divider">
+    <a href="<?= BASE_URL ?>/print_stickers.php" class="nav-link <?= activeLink('print_stickers.php') ?>" target="_blank">
+      <i class="fas fa-tags"></i> Print Labels
+      <?php if ($pendingOrds > 0): ?>
+        <span class="badge bg-warning text-dark ms-auto"><?= $pendingOrds ?></span>
+      <?php endif; ?>
+    </a>
     <a href="<?= BASE_URL ?>/reports.php"     class="nav-link <?= activeLink('reports.php') ?>">
       <i class="fas fa-chart-line"></i> Reports
     </a>

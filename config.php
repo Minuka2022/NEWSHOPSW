@@ -10,3 +10,5 @@ define('SITE_NAME',     'ShopSW Manager');
 define('CURRENCY',      '$');
 define('APP_VERSION',   '1.0');
 define('BASE_URL',      'http://localhost/NEWSHOPSW');
+define('STORE_ADDRESS', '');   // e.g. "123 Main St, Colombo 07"
+define('STORE_PHONE',   '');   // e.g. "077 123 4567"
