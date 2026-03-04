@@ -110,15 +110,18 @@ foreach (array_filter(array_map('trim', explode(';', $sql_tables))) as $sql) {
     }
 }
 
-// Seed sample data if tables are empty
+// ── Seed categories (if empty) ────────────────────────────────────────────────────
 $cat_count = $conn->query("SELECT COUNT(*) as c FROM categories")->fetch_assoc()['c'];
 if ($cat_count == 0) {
     $cats = ['Clothes', 'Bags', 'Tools', 'Accessories', 'Electronics', 'Other'];
     $stmt = $conn->prepare("INSERT INTO categories (name) VALUES (?)");
     foreach ($cats as $c) { $stmt->bind_param('s', $c); $stmt->execute(); }
     $success[] = 'Sample categories added';
+}
 
-    // Sample customers
+// ── Seed customers (if empty) ─────────────────────────────────────────────────────
+$cust_count = $conn->query("SELECT COUNT(*) as c FROM customers")->fetch_assoc()['c'];
+if ($cust_count == 0) {
     $customers = [
         ['John Smith',  '+1 555-0101', 'john@email.com',  '123 Main St, City, ST 10001'],
         ['Sarah Jones', '+1 555-0202', 'sarah@email.com', '456 Oak Ave, Town, ST 20002'],
@@ -129,17 +132,25 @@ if ($cat_count == 0) {
         $stmt2->execute();
     }
     $success[] = 'Sample customers added';
+}
 
-    // Sample products
+// ── Seed products (if empty) ──────────────────────────────────────────────────────
+$prod_count = $conn->query("SELECT COUNT(*) as c FROM products")->fetch_assoc()['c'];
+if ($prod_count == 0) {
+    // Look up category IDs dynamically so they work regardless of insertion order
+    $catIds = [];
+    $cr = $conn->query("SELECT id, name FROM categories");
+    while ($row = $cr->fetch_assoc()) $catIds[$row['name']] = $row['id'];
+
     $prods = [
-        [1, 'Blue Denim Jacket',  'JKT-001', 'Classic blue denim jacket', 59.99, 30.00, 20],
-        [1, 'White T-Shirt',      'TSH-001', 'Plain white t-shirt',        12.99, 5.00,  50],
-        [2, 'Leather Handbag',    'BAG-001', 'Brown leather handbag',      79.99, 40.00, 15],
-        [2, 'Canvas Tote',        'BAG-002', 'Eco canvas tote bag',         9.99, 4.00,  30],
-        [3, 'Hammer',             'TLT-001', 'Steel claw hammer 16oz',     18.99, 9.00,  25],
-        [3, 'Screwdriver Set',    'TLT-002', '12-piece screwdriver set',   24.99, 12.00, 10],
-        [4, 'Sunglasses',         'ACC-001', 'UV400 sunglasses',           14.99, 6.00,  40],
-        [5, 'USB-C Cable',        'ELC-001', '2m USB-C braided cable',      8.99, 3.00,   3],
+        [$catIds['Clothes']     ?? 1, 'Blue Denim Jacket', 'JKT-001', 'Classic blue denim jacket', 59.99, 30.00, 20],
+        [$catIds['Clothes']     ?? 1, 'White T-Shirt',     'TSH-001', 'Plain white t-shirt',        12.99,  5.00, 50],
+        [$catIds['Bags']        ?? 2, 'Leather Handbag',   'BAG-001', 'Brown leather handbag',      79.99, 40.00, 15],
+        [$catIds['Bags']        ?? 2, 'Canvas Tote',       'BAG-002', 'Eco canvas tote bag',         9.99,  4.00, 30],
+        [$catIds['Tools']       ?? 3, 'Hammer',            'TLT-001', 'Steel claw hammer 16oz',     18.99,  9.00, 25],
+        [$catIds['Tools']       ?? 3, 'Screwdriver Set',   'TLT-002', '12-piece screwdriver set',   24.99, 12.00, 10],
+        [$catIds['Accessories'] ?? 4, 'Sunglasses',        'ACC-001', 'UV400 sunglasses',           14.99,  6.00, 40],
+        [$catIds['Electronics'] ?? 5, 'USB-C Cable',       'ELC-001', '2m USB-C braided cable',      8.99,  3.00,  3],
     ];
     $stmt3 = $conn->prepare("INSERT INTO products (category_id, name, sku, description, price, cost, stock) VALUES (?,?,?,?,?,?,?)");
     foreach ($prods as $p) {
@@ -147,18 +158,23 @@ if ($cat_count == 0) {
         $stmt3->execute();
     }
     $success[] = 'Sample products added (8 products)';
+}
 
-    // Sample colors for bag products
-    $bagRows = $conn->query("SELECT id FROM products WHERE category_id=(SELECT id FROM categories WHERE name='Bags') AND active=1");
+// ── Seed bag colors (if empty) ────────────────────────────────────────────────────
+$color_count = $conn->query("SELECT COUNT(*) as c FROM product_colors")->fetch_assoc()['c'];
+if ($color_count == 0) {
+    $bagRows   = $conn->query("SELECT p.id FROM products p JOIN categories c ON c.id=p.category_id WHERE c.name='Bags' AND p.active=1");
     $bagColors = ['Red','Blue','Black','Brown','Green','Purple','Pink'];
-    $stmtC = $conn->prepare("INSERT INTO product_colors (product_id, color_name) VALUES (?,?)");
+    $stmtC     = $conn->prepare("INSERT INTO product_colors (product_id, color_name) VALUES (?,?)");
+    $added = 0;
     while ($br = $bagRows->fetch_assoc()) {
         foreach ($bagColors as $col) {
             $stmtC->bind_param('is', $br['id'], $col);
             $stmtC->execute();
+            $added++;
         }
     }
-    $success[] = 'Sample colors added for bag products';
+    if ($added) $success[] = 'Sample colors added for bag products';
 }
 
 ?>

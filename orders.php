@@ -6,21 +6,31 @@ $action = $_GET['action'] ?? 'list';
 
 // ── AJAX: product search for autocomplete ─────────────────────────────────────────
 if ($action === 'product_search') {
-    $q = sanitize($conn, $_GET['q'] ?? '');
-    $r = $conn->query("
-        SELECT p.id, p.name, p.price, p.stock, p.unit,
-               GROUP_CONCAT(pc.color_name ORDER BY pc.color_name SEPARATOR '||') AS colors
-        FROM products p
-        LEFT JOIN product_colors pc ON pc.product_id = p.id
-        WHERE p.active=1 AND p.stock>0 AND (p.name LIKE '%$q%' OR p.sku LIKE '%$q%')
-        GROUP BY p.id LIMIT 10
-    ");
-    $prods = [];
-    while($row = $r->fetch_assoc()) {
-        $row['colors'] = $row['colors'] ? explode('||', $row['colors']) : [];
-        $prods[] = $row;
-    }
     header('Content-Type: application/json');
+    $q = sanitize($conn, $_GET['q'] ?? '');
+    try {
+        $r = $conn->query("
+            SELECT p.id, p.name, p.price, p.stock, p.unit,
+                   GROUP_CONCAT(pc.color_name ORDER BY pc.color_name SEPARATOR '||') AS colors
+            FROM products p
+            LEFT JOIN product_colors pc ON pc.product_id = p.id
+            WHERE p.active=1 AND p.stock>0 AND (p.name LIKE '%$q%' OR p.sku LIKE '%$q%')
+            GROUP BY p.id LIMIT 10
+        ");
+        $prods = [];
+        while ($row = $r->fetch_assoc()) {
+            $row['colors'] = $row['colors'] ? explode('||', $row['colors']) : [];
+            $prods[] = $row;
+        }
+    } catch (Exception $e) {
+        // product_colors table may not exist yet — fall back to simple search
+        $r = $conn->query("SELECT id,name,price,stock,unit FROM products WHERE active=1 AND stock>0 AND (name LIKE '%$q%' OR sku LIKE '%$q%') LIMIT 10");
+        $prods = [];
+        while ($row = $r->fetch_assoc()) {
+            $row['colors'] = [];
+            $prods[] = $row;
+        }
+    }
     echo json_encode($prods);
     exit;
 }
@@ -326,6 +336,7 @@ document.getElementById("productSearch").addEventListener("input", function() {
     searchTimer = setTimeout(function() {
         fetch("orders.php?action=product_search&q=" + encodeURIComponent(q))
             .then(function(r) { return r.json(); })
+            .catch(function() { return []; })
             .then(function(data) {
                 dd.innerHTML = "";
                 if (!data.length) {
