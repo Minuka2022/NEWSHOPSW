@@ -1,21 +1,31 @@
 <?php
+// ─── Local overrides ──────────────────────────────────────────────────────────
+// config.local.php holds this machine's real settings (password, DB details,
+// store address). It is NOT tracked by git, so secrets never reach GitHub.
+// It is loaded first: in PHP the first define() wins, so anything set there
+// overrides the defaults below. See config.local.example.php to create one.
+if (file_exists(__DIR__ . '/config.local.php')) {
+    require_once __DIR__ . '/config.local.php';
+}
+
 // ─── Database Configuration ───────────────────────────────────────────────────
-define('DB_HOST', 'localhost');
-define('DB_USER', 'root');
-define('DB_PASS', '');           // Change if your MySQL has a password
-define('DB_NAME', 'shopsw');
+defined('DB_HOST') || define('DB_HOST', 'localhost');
+defined('DB_USER') || define('DB_USER', 'root');
+defined('DB_PASS') || define('DB_PASS', '');     // Change if your MySQL has a password
+defined('DB_NAME') || define('DB_NAME', 'shopsw');
 
 // ─── App Settings ─────────────────────────────────────────────────────────────
-define('SITE_NAME',     'Glomax Gadgets');
-define('CURRENCY',      'Rs. ');
-define('APP_VERSION',   '1.0');
-define('STORE_ADDRESS', '');   // e.g. "123 Main St, Colombo 07"
-define('STORE_PHONE',   '');   // e.g. "077 123 4567"
+defined('SITE_NAME')     || define('SITE_NAME',     'Glomax Gadgets');
+defined('CURRENCY')      || define('CURRENCY',      'Rs. ');
+defined('APP_VERSION')   || define('APP_VERSION',   '1.0');
+defined('STORE_ADDRESS') || define('STORE_ADDRESS', '');   // e.g. "123 Main St, Colombo 07"
+defined('STORE_PHONE')   || define('STORE_PHONE',   '');   // e.g. "077 123 4567"
 
 // ─── Login ────────────────────────────────────────────────────────────────────
-// Password required to open the manager. Change this before handing the system
-// over. To disable the login entirely, set it to an empty string ''.
-define('APP_PASSWORD',  'changeme');
+// Password required to open the manager. Set the real one in config.local.php —
+// do NOT put it here, this file is public on GitHub.
+// To disable the login entirely, set it to an empty string ''.
+defined('APP_PASSWORD')  || define('APP_PASSWORD',  'changeme');
 
 // ─── Dynamic Base URL ─────────────────────────────────────────────────────────
 // BASE_URL   — uses whatever host the browser used (localhost or LAN IP).
