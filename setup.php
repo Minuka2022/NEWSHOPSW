@@ -30,8 +30,9 @@ $conn->set_charset('utf8mb4');
 $sql_tables = "
 
 CREATE TABLE IF NOT EXISTS categories (
-    id        INT AUTO_INCREMENT PRIMARY KEY,
-    name      VARCHAR(100) NOT NULL,
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    name       VARCHAR(100) NOT NULL,
+    sku_prefix VARCHAR(20) NOT NULL DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -114,6 +115,7 @@ foreach (array_filter(array_map('trim', explode(';', $sql_tables))) as $sql) {
 // ── Column migrations (safe to run on every visit) ────────────────────────────────
 $conn->query("ALTER TABLE order_items    ADD COLUMN IF NOT EXISTS color VARCHAR(100) DEFAULT NULL AFTER total_price");
 $conn->query("ALTER TABLE product_colors ADD COLUMN IF NOT EXISTS stock INT NOT NULL DEFAULT 0   AFTER color_name");
+$conn->query("ALTER TABLE categories     ADD COLUMN IF NOT EXISTS sku_prefix VARCHAR(20) NOT NULL DEFAULT '' AFTER name");
 $success[] = 'Column migrations applied';
 
 // ── Seed categories (if empty or force) ──────────────────────────────────────────
@@ -200,7 +202,7 @@ if ($color_count == 0) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ShopSW — Setup</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="<?= BASE_URL ?>/assets/vendor/bootstrap/bootstrap.min.css">
 <style>body{background:#f1f5f9;font-family:'Inter',sans-serif;}</style>
 </head>
 <body>

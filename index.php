@@ -89,6 +89,34 @@ $lowStockItems = $conn->query("SELECT * FROM products WHERE stock <= 5 AND activ
 
   </div><!-- /row stats -->
 
+  <!-- ── Open on Phone (desktop only) ── -->
+  <?php $allIPs = defined('ALL_LOCAL_IPS') ? ALL_LOCAL_IPS : []; ?>
+  <div class="card mb-3 d-none d-md-block" style="background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;border:0">
+    <div class="card-body py-3 d-flex align-items-center gap-4 flex-wrap">
+      <div id="phoneQR" style="background:#fff;padding:6px;border-radius:6px;line-height:0;flex-shrink:0"></div>
+      <div style="flex:1;min-width:200px">
+        <div class="fw-bold mb-1" style="font-size:1rem">&#128247; Open on any phone</div>
+        <?php if ($allIPs): ?>
+          <div class="small mb-2" style="opacity:.85">Phone must be on the same network as this PC. Available addresses:</div>
+          <?php foreach ($allIPs as $ip): ?>
+            <?php
+              $label = '';
+              if (substr($ip, 0, 11) === '192.168.137') $label = ' <span style="opacity:.7;font-size:.7rem">(Hotspot)</span>';
+            ?>
+            <div class="mb-1">
+              <code style="background:rgba(255,255,255,.15);padding:3px 8px;border-radius:5px;font-size:.82rem">
+                http://<?= $ip ?>/NEWSHOPSW/
+              </code><?= $label ?>
+            </div>
+          <?php endforeach; ?>
+          <div class="small mt-2" style="opacity:.7">&#9888; No WiFi? Enable <strong>Mobile Hotspot</strong> on this PC (Settings → Network → Mobile Hotspot), connect your phone to it, then use the Hotspot address above.</div>
+        <?php else: ?>
+          <div class="small" style="opacity:.85">No network found. Enable WiFi or Mobile Hotspot on this PC first.</div>
+        <?php endif; ?>
+      </div>
+    </div>
+  </div>
+
   <div class="row g-3">
 
     <!-- ── Sales Chart ── -->
@@ -183,7 +211,13 @@ $lowStockItems = $conn->query("SELECT * FROM products WHERE stock <= 5 AND activ
 </div>
 
 <?php
-$extraJS = '<script>
+$extraJS = '<script src="' . BASE_URL . '/assets/vendor/qrcode/qrcode.min.js"></script><script>
+new QRCode(document.getElementById("phoneQR"), {
+  text: ' . json_encode(SCAN_BASE_URL . '/') . ',
+  width: 80, height: 80,
+  colorDark: "#1e3a8a", colorLight: "#ffffff",
+  correctLevel: QRCode.CorrectLevel.M
+});
 var ctx = document.getElementById("salesChart").getContext("2d");
 new Chart(ctx, {
   type: "bar",

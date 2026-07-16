@@ -13,10 +13,9 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title><?= SITE_NAME ?> — <?= $pageTitle ?? 'Home' ?></title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link href="<?= BASE_URL ?>/assets/vendor/inter/inter.css" rel="stylesheet">
+<link rel="stylesheet" href="<?= BASE_URL ?>/assets/vendor/fontawesome/css/all.min.css">
+<link rel="stylesheet" href="<?= BASE_URL ?>/assets/vendor/bootstrap/bootstrap.min.css">
 <link rel="stylesheet" href="<?= BASE_URL ?>/assets/css/style.css">
 </head>
 <body>
@@ -64,6 +63,9 @@ $currentPage = basename($_SERVER['PHP_SELF']);
     <small><i class="fas fa-circle text-success"></i> System Online</small>
   </div>
 </div>
+
+<!-- Mobile overlay (dims page behind open sidebar) -->
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
 
 <!-- ── Main Wrapper ── -->
 <div class="main-wrapper" id="mainWrapper">

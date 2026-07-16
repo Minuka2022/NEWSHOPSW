@@ -1,14 +1,50 @@
   </main><!-- /page-content -->
 </div><!-- /main-wrapper -->
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="<?= BASE_URL ?>/assets/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+<script src="<?= BASE_URL ?>/assets/vendor/chart/chart.umd.min.js"></script>
 <script>
-// Sidebar toggle
-document.getElementById('sidebarToggle')?.addEventListener('click', function() {
-    document.getElementById('sidebar').classList.toggle('collapsed');
-    document.getElementById('mainWrapper').classList.toggle('expanded');
-});
+// Sidebar toggle — mobile slides in/out, desktop collapses to icons
+(function() {
+  var sidebar  = document.getElementById('sidebar');
+  var wrapper  = document.getElementById('mainWrapper');
+  var overlay  = document.getElementById('sidebarOverlay');
+  var toggle   = document.getElementById('sidebarToggle');
+
+  function isMobile() { return window.innerWidth <= 768; }
+
+  function closeMobileSidebar() {
+    sidebar.classList.remove('mobile-open');
+    overlay.classList.remove('active');
+  }
+
+  toggle?.addEventListener('click', function() {
+    if (isMobile()) {
+      sidebar.classList.toggle('mobile-open');
+      overlay.classList.toggle('active');
+    } else {
+      sidebar.classList.toggle('collapsed');
+      wrapper.classList.toggle('expanded');
+    }
+  });
+
+  // Close when tapping the overlay
+  overlay?.addEventListener('click', closeMobileSidebar);
+
+  // Close when a nav link is tapped on mobile
+  document.querySelectorAll('.sidebar .nav-link').forEach(function(link) {
+    link.addEventListener('click', function() {
+      if (isMobile()) closeMobileSidebar();
+    });
+  });
+
+  // Ensure correct state when resizing
+  window.addEventListener('resize', function() {
+    if (!isMobile()) {
+      closeMobileSidebar();
+    }
+  });
+})();
 
 // Auto-dismiss alerts after 4 seconds
 document.querySelectorAll('.alert').forEach(function(el) {

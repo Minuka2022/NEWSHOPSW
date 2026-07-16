@@ -1,6 +1,9 @@
 <?php
-$pageTitle = 'Customers';
-require_once 'includes/header.php';
+// ── Bootstrap (no HTML output yet, so redirects are safe) ───────────────────────────
+if (session_status() === PHP_SESSION_NONE) session_start();
+require_once 'config.php';
+require_once 'includes/db.php';
+require_once 'includes/functions.php';
 
 $action = $_GET['action'] ?? 'list';
 $id     = (int)($_GET['id'] ?? 0);
@@ -35,6 +38,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->execute();
     redirect(BASE_URL . '/customers.php');
 }
+
+// ── Render page (HTML output begins here) ───────────────────────────────────────────
+$pageTitle = 'Customers';
+require_once 'includes/header.php';
 
 // ── Add / Edit Form ───────────────────────────────────────────────────────────────
 if ($action === 'add' || $action === 'edit') {

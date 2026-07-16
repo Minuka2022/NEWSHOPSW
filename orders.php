@@ -7,6 +7,14 @@ require_once 'includes/functions.php';
 
 $action = $_GET['action'] ?? 'list';
 
+// ── AJAX: poll for order changes (used by desktop auto-refresh) ───────────────────
+if ($action === 'last_updated') {
+    header('Content-Type: application/json');
+    $row = $conn->query("SELECT MAX(updated_at) AS ts FROM orders")->fetch_assoc();
+    echo json_encode(['ts' => $row['ts'] ?? '']);
+    exit;
+}
+
 // ── AJAX: product search ── (must be before ANY HTML output) ──────────────────────
 if ($action === 'product_search') {
     header('Content-Type: application/json');
@@ -44,6 +52,15 @@ if ($action === 'product_search') {
     exit;
 }
 
+// ── Delete order ──────────────────────────────────────────────────────────────────
+if ($action === 'delete' && isset($_GET['id'])) {
+    $oid = (int)$_GET['id'];
+    $conn->query("DELETE FROM order_items WHERE order_id=$oid");
+    $conn->query("DELETE FROM orders WHERE id=$oid");
+    flash('success', 'Order deleted.');
+    redirect(BASE_URL . '/orders.php');
+}
+
 // ── Status update ─────────────────────────────────────────────────────────────────
 if ($action === 'update_status' && isset($_GET['id'], $_GET['status'])) {
     $oid    = (int)$_GET['id'];
@@ -58,7 +75,7 @@ if ($action === 'update_status' && isset($_GET['id'], $_GET['status'])) {
 
 // ── Save new order ────────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
-    $cust_id     = (int)($_POST['customer_id'] ?? 0) ?: 'NULL';
+    $cust_id_raw = (int)($_POST['customer_id'] ?? 0) ?: null;
     $ship_addr   = sanitize($conn, $_POST['shipping_address'] ?? '');
     $notes       = sanitize($conn, $_POST['notes'] ?? '');
     $discount    = (float)($_POST['discount'] ?? 0);
@@ -92,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
     $conn->begin_transaction();
     try {
         $stmt = $conn->prepare("INSERT INTO orders (customer_id,order_number,subtotal,discount,total,notes,shipping_address) VALUES (?,?,?,?,?,?,?)");
-        $stmt->bind_param('isdddss', $cust_id, $order_num, $subtotal, $discount, $total, $notes, $ship_addr);
+        $stmt->bind_param('isdddss', $cust_id_raw, $order_num, $subtotal, $discount, $total, $notes, $ship_addr);
         $stmt->execute();
         $order_id = $conn->insert_id;
 
@@ -137,6 +154,28 @@ if ($action === 'new') {
         $r = $conn->query("SELECT * FROM customers WHERE id=$selCust LIMIT 1");
         if ($r->num_rows) $custData = $r->fetch_assoc();
     }
+
+    // Fetch all available products upfront (client-side filtering, no AJAX needed)
+    $allProds = $conn->query("
+        SELECT p.id, p.name, p.price, p.stock, p.unit,
+               GROUP_CONCAT(CONCAT(pc.color_name,':',pc.stock) ORDER BY pc.color_name SEPARATOR '||') AS colors_raw
+        FROM products p
+        LEFT JOIN product_colors pc ON pc.product_id = p.id AND pc.stock > 0
+        WHERE p.active=1
+          AND (p.stock > 0 OR EXISTS (SELECT 1 FROM product_colors x WHERE x.product_id=p.id AND x.stock>0))
+        GROUP BY p.id ORDER BY p.name
+    ")->fetch_all(MYSQLI_ASSOC);
+    foreach ($allProds as &$p) {
+        $p['colors'] = [];
+        if ($p['colors_raw']) {
+            foreach (explode('||', $p['colors_raw']) as $cs) {
+                [$cn, $cs2] = explode(':', $cs, 2);
+                $p['colors'][] = ['name' => $cn, 'stock' => (int)$cs2];
+            }
+        }
+        unset($p['colors_raw']);
+    }
+    unset($p);
     ?>
     <div class="container-fluid">
       <div class="d-flex align-items-center mb-4 gap-3">
@@ -212,13 +251,39 @@ if ($action === 'new') {
                 </button>
               </div>
               <div class="card-body">
-                <div class="mb-3 position-relative">
-                  <input type="text" id="productSearch" class="form-control" placeholder="&#128269; Type product name to search and add...">
-                  <div id="searchDropdown" class="position-absolute w-100 bg-white border rounded shadow-sm" style="top:100%;z-index:999;display:none;max-height:220px;overflow-y:auto"></div>
+                <!-- Product picker -->
+                <input type="text" id="productSearch" class="form-control mb-2" placeholder="&#128269; Filter products...">
+                <div id="productGrid" class="row g-2 mb-3" style="max-height:260px;overflow-y:auto">
+                  <?php foreach ($allProds as $p): ?>
+                  <div class="col-6 col-sm-4 prod-card-wrap"
+                       data-name="<?= strtolower(htmlspecialchars($p['name'])) ?>"
+                       data-id="<?= $p['id'] ?>"
+                       data-price="<?= $p['price'] ?>"
+                       data-colors='<?= htmlspecialchars(json_encode($p['colors']), ENT_QUOTES) ?>'>
+                    <div class="prod-card border rounded p-2 h-100" style="cursor:pointer">
+                      <div class="fw-600 small"><?= htmlspecialchars($p['name']) ?></div>
+                      <div class="text-primary small fw-bold"><?= currency($p['price']) ?></div>
+                      <?php if ($p['colors']): ?>
+                        <div class="mt-1">
+                          <?php foreach ($p['colors'] as $c): ?>
+                            <span class="badge bg-secondary" style="font-size:.65rem"><?= htmlspecialchars($c['name']) ?> (<?= $c['stock'] ?>)</span>
+                          <?php endforeach; ?>
+                        </div>
+                      <?php else: ?>
+                        <div class="text-muted" style="font-size:.7rem">Stock: <?= $p['stock'] ?> <?= htmlspecialchars($p['unit']) ?></div>
+                      <?php endif; ?>
+                    </div>
+                  </div>
+                  <?php endforeach; ?>
+                  <?php if (!$allProds): ?>
+                    <div class="col-12 text-center text-muted py-4">No products in stock. <a href="products.php">Add products</a></div>
+                  <?php endif; ?>
                 </div>
+                <!-- Order items added -->
+                <hr class="my-2">
                 <div id="orderItems">
-                  <div class="text-center text-muted py-5" id="emptyMsg">
-                    <i class="fas fa-box-open fa-2x mb-2"></i><br>Search products above to add items
+                  <div class="text-center text-muted py-3" id="emptyMsg">
+                    <i class="fas fa-arrow-up me-1"></i>Tap a product above to add it
                   </div>
                 </div>
               </div>
@@ -232,6 +297,18 @@ if ($action === 'new') {
     <?php
     $curr = htmlspecialchars(CURRENCY, ENT_QUOTES);
     ob_start(); ?>
+<style>
+.prod-card {
+  background: #f8fafc;
+  transition: background .15s, box-shadow .15s;
+  user-select: none;
+}
+.prod-card:hover {
+  background: #eff6ff;
+  box-shadow: 0 2px 8px rgba(59,130,246,.15);
+}
+.prod-card:active { background: #dbeafe; }
+</style>
 <script>
 var CURRENCY = "<?= $curr ?>";
 
@@ -340,58 +417,27 @@ function calcTotal() {
     document.getElementById("summTotal").textContent    = CURRENCY + total.toFixed(2);
 }
 
-var searchTimer;
-document.getElementById("productSearch").addEventListener("input", function() {
-    clearTimeout(searchTimer);
-    var q  = this.value.trim();
-    var dd = document.getElementById("searchDropdown");
-    if (!q) { dd.style.display = "none"; return; }
-    searchTimer = setTimeout(function() {
-        fetch("orders.php?action=product_search&q=" + encodeURIComponent(q))
-            .then(function(r) { return r.json(); })
-            .catch(function() { return []; })
-            .then(function(data) {
-                dd.innerHTML = "";
-                if (!data.length) {
-                    dd.innerHTML = "<div class='p-3 text-muted small'>No products found</div>";
-                    dd.style.display = "block";
-                    return;
-                }
-                data.forEach(function(p) {
-                    var el = document.createElement("div");
-                    el.className = "px-3 py-2 small border-bottom";
-                    el.style.cursor = "pointer";
-                    el.dataset.id     = p.id;
-                    el.dataset.price  = p.price;
-                    el.dataset.name   = p.name;
-                    el.dataset.colors = JSON.stringify(p.colors || []);
-                    var colorBadge = p.colors && p.colors.length
-                        ? " <span class='badge bg-info text-dark'>" + p.colors.map(function(c){return c.name+"("+c.stock+")"}).join(", ") + "</span>" : "";
-                    el.innerHTML = "<b>" + p.name + "</b> &mdash; " + CURRENCY +
-                                   parseFloat(p.price).toFixed(2) +
-                                   " <span class='text-muted'>(Stock: " + p.stock + " " + p.unit + ")</span>" +
-                                   colorBadge;
-                    el.addEventListener("mousedown", function() {
-                        selectProduct(this.dataset.id, this.dataset.name,
-                                      parseFloat(this.dataset.price),
-                                      JSON.parse(this.dataset.colors || "[]"));
-                    });
-                    dd.appendChild(el);
-                });
-                dd.style.display = "block";
-            });
-    }, 250);
+// ── Product grid: click to add ─────────────────────────────────────────────
+document.querySelectorAll(".prod-card-wrap").forEach(function(wrap) {
+    wrap.querySelector(".prod-card").addEventListener("click", function() {
+        var id     = wrap.dataset.id;
+        var name   = wrap.querySelector(".fw-600").textContent;
+        var price  = parseFloat(wrap.dataset.price);
+        var colors = JSON.parse(wrap.dataset.colors || "[]");
+        addItem(id, name, price, colors);
+        // Brief highlight
+        this.style.background = "#d1fae5";
+        var card = this;
+        setTimeout(function(){ card.style.background = ""; }, 500);
+    });
 });
 
-function selectProduct(id, name, price, colors) {
-    addItem(id, name, price, colors || []);
-    document.getElementById("productSearch").value = "";
-    document.getElementById("searchDropdown").style.display = "none";
-}
-
-document.addEventListener("click", function(e) {
-    if (!e.target.closest("#productSearch"))
-        document.getElementById("searchDropdown").style.display = "none";
+// ── Filter product grid client-side ────────────────────────────────────────
+document.getElementById("productSearch").addEventListener("input", function() {
+    var q = this.value.toLowerCase().trim();
+    document.querySelectorAll(".prod-card-wrap").forEach(function(wrap) {
+        wrap.style.display = (!q || wrap.dataset.name.includes(q)) ? "" : "none";
+    });
 });
 
 var custSel = document.getElementById("custSelect");
@@ -411,41 +457,46 @@ $where = "WHERE 1=1";
 if ($statusFilter) $where .= " AND o.status='$statusFilter'";
 if ($search)       $where .= " AND (o.order_number LIKE '%$search%' OR c.name LIKE '%$search%')";
 
-$orders = $conn->query("
-    SELECT o.*, c.name as customer_name
+$ordersAll = $conn->query("
+    SELECT o.*, c.name as customer_name,
+           (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id=o.id) AS item_count
     FROM orders o
     LEFT JOIN customers c ON c.id = o.customer_id
     $where
     ORDER BY o.created_at DESC
-");
+")->fetch_all(MYSQLI_ASSOC);
 
 $statusCounts = [];
 foreach (['pending','processing','shipped','delivered','cancelled'] as $st) {
     $r = $conn->query("SELECT COUNT(*) as c FROM orders WHERE status='$st'")->fetch_assoc();
     $statusCounts[$st] = $r['c'];
 }
+
+$stColors = ['pending'=>'#f59e0b','processing'=>'#3b82f6','shipped'=>'#06b6d4','delivered'=>'#10b981','cancelled'=>'#ef4444'];
+$bsColors = ['pending'=>'warning','processing'=>'primary','shipped'=>'info','delivered'=>'success','cancelled'=>'danger'];
 ?>
 <div class="container-fluid">
 
+  <!-- Filter / action bar -->
   <div class="d-flex gap-2 flex-wrap mb-3">
     <a href="orders.php" class="btn btn-sm <?= !$statusFilter?'btn-dark':'btn-outline-secondary' ?>">All</a>
     <?php foreach($statusCounts as $st => $cnt): ?>
-      <?php $colors = ['pending'=>'warning','processing'=>'primary','shipped'=>'info','delivered'=>'success','cancelled'=>'danger']; ?>
-      <a href="orders.php?status=<?= $st ?>" class="btn btn-sm btn-outline-<?= $colors[$st] ?> <?= $statusFilter===$st?'active':'' ?>">
-        <?= ucfirst($st) ?> <span class="badge bg-<?= $colors[$st] ?> <?= $st==='pending'?'text-dark':'' ?>"><?= $cnt ?></span>
+      <a href="orders.php?status=<?= $st ?>" class="btn btn-sm btn-outline-<?= $bsColors[$st] ?> <?= $statusFilter===$st?'active':'' ?>">
+        <?= ucfirst($st) ?> <span class="badge bg-<?= $bsColors[$st] ?> <?= $st==='pending'?'text-dark':'' ?>"><?= $cnt ?></span>
       </a>
     <?php endforeach; ?>
-    <form class="d-flex gap-2 ms-auto" method="GET">
+    <form class="d-flex gap-2 ms-auto flex-wrap" method="GET">
       <?php if($statusFilter): ?><input type="hidden" name="status" value="<?= $statusFilter ?>"><?php endif; ?>
-      <input type="text" name="q" class="form-control form-control-sm" style="width:200px" placeholder="Search order # or customer..." value="<?= htmlspecialchars($search) ?>">
+      <input type="text" name="q" class="form-control form-control-sm" style="min-width:160px;max-width:200px" placeholder="Search…" value="<?= htmlspecialchars($search) ?>">
       <button class="btn btn-primary btn-sm">Go</button>
     </form>
     <a href="orders.php?action=new" class="btn btn-success btn-sm"><i class="fas fa-plus me-1"></i>New Order</a>
-    <a href="print_stickers.php" class="btn btn-warning btn-sm" target="_blank"><i class="fas fa-tags me-1"></i>Print Pending Labels</a>
+    <a href="print_stickers.php" class="btn btn-warning btn-sm" target="_blank"><i class="fas fa-tags me-1"></i>Print Labels</a>
   </div>
 
-  <div class="card">
-    <div class="card-header"><i class="fas fa-shopping-cart me-2 text-primary"></i>Orders (<?= $orders->num_rows ?>)</div>
+  <!-- ── Desktop table (hidden on mobile) ── -->
+  <div class="card d-none d-md-block">
+    <div class="card-header"><i class="fas fa-shopping-cart me-2 text-primary"></i>Orders (<?= count($ordersAll) ?>)</div>
     <div class="card-body p-0">
       <div class="table-responsive">
         <table class="table mb-0">
@@ -453,43 +504,116 @@ foreach (['pending','processing','shipped','delivered','cancelled'] as $st) {
             <tr><th>Order #</th><th>Customer</th><th>Items</th><th>Status</th><th>Total</th><th>Date</th><th>Actions</th></tr>
           </thead>
           <tbody>
-          <?php if ($orders->num_rows === 0): ?>
+          <?php if (!$ordersAll): ?>
             <tr><td colspan="7" class="text-center py-5 text-muted">No orders found. <a href="orders.php?action=new">Create one!</a></td></tr>
           <?php else: ?>
-            <?php while($ord = $orders->fetch_assoc()):
-              $itemCount = $conn->query("SELECT COUNT(*) as c FROM order_items WHERE order_id={$ord['id']}")->fetch_assoc()['c'];
+            <?php foreach($ordersAll as $ord):
+              $stColor = $stColors[$ord['status']] ?? '#6b7280';
+              $isDark  = $ord['status'] === 'pending';
             ?>
             <tr>
               <td><a href="order_view.php?id=<?= $ord['id'] ?>" class="fw-bold text-primary"><?= htmlspecialchars($ord['order_number']) ?></a></td>
               <td><?= htmlspecialchars($ord['customer_name'] ?? 'Walk-in') ?></td>
-              <td><span class="badge bg-light text-dark border"><?= $itemCount ?> items</span></td>
+              <td><span class="badge bg-light text-dark border"><?= $ord['item_count'] ?> items</span></td>
               <td>
-                <div class="dropdown">
-                  <button class="btn btn-sm dropdown-toggle border-0 p-0" data-bs-toggle="dropdown"><?= statusBadge($ord['status']) ?></button>
-                  <ul class="dropdown-menu dropdown-menu-sm">
-                    <?php foreach(['pending','processing','shipped','delivered','cancelled'] as $st): ?>
-                      <?php if($st !== $ord['status']): ?>
-                        <li><a class="dropdown-item small" href="orders.php?action=update_status&id=<?= $ord['id'] ?>&status=<?= $st ?>"><?= ucfirst($st) ?></a></li>
-                      <?php endif; ?>
-                    <?php endforeach; ?>
-                  </ul>
-                </div>
+                <select onchange="if(this.value)location.href='orders.php?action=update_status&id=<?= $ord['id'] ?>&status='+this.value"
+                        class="status-sel"
+                        style="background:<?= $stColor ?>;color:<?= $isDark?'#1f2937':'#fff' ?>;border-color:<?= $stColor ?>">
+                  <?php foreach(['pending','processing','shipped','delivered','cancelled'] as $st): ?>
+                    <option value="<?= $st ?>" <?= $ord['status']===$st?'selected':'' ?> style="background:#fff;color:#1f2937"><?= ucfirst($st) ?></option>
+                  <?php endforeach; ?>
+                </select>
               </td>
               <td class="fw-bold"><?= currency($ord['total']) ?></td>
               <td class="text-muted small"><?= date('d M Y H:i', strtotime($ord['created_at'])) ?></td>
               <td>
-                <a href="order_view.php?id=<?= $ord['id'] ?>" class="btn btn-sm btn-outline-primary me-1" title="View"><i class="fas fa-eye"></i></a>
-                <a href="order_sticker.php?id=<?= $ord['id'] ?>" target="_blank" class="btn btn-sm btn-outline-secondary me-1" title="Print Sticker"><i class="fas fa-print"></i></a>
-                <a href="orders.php?action=update_status&id=<?= $ord['id'] ?>&status=cancelled" class="btn btn-sm btn-outline-danger"
-                   onclick="return confirm('Cancel this order?')" title="Cancel"><i class="fas fa-times"></i></a>
+                <a href="order_view.php?id=<?= $ord['id'] ?>" class="btn btn-sm btn-outline-primary" title="View"><i class="fas fa-eye"></i></a>
+                <a href="order_sticker.php?id=<?= $ord['id'] ?>" target="_blank" class="btn btn-sm btn-outline-secondary" title="Print"><i class="fas fa-print"></i></a>
+                <a href="orders.php?action=delete&id=<?= $ord['id'] ?>" class="btn btn-sm btn-danger"
+                   onclick="return confirm('Delete order <?= htmlspecialchars($ord['order_number']) ?>? This cannot be undone.')" title="Delete"><i class="fas fa-trash"></i></a>
               </td>
             </tr>
-            <?php endwhile; ?>
+            <?php endforeach; ?>
           <?php endif; ?>
           </tbody>
         </table>
       </div>
     </div>
   </div>
+
+  <!-- ── Mobile card list (hidden on desktop) ── -->
+  <div class="d-md-none">
+    <?php if (!$ordersAll): ?>
+      <div class="text-center py-5 text-muted">No orders found. <a href="orders.php?action=new">Create one!</a></div>
+    <?php else: ?>
+      <?php foreach($ordersAll as $ord):
+        $stColor  = $stColors[$ord['status']] ?? '#6b7280';
+        $isDark   = $ord['status'] === 'pending';
+        $bsColor  = $bsColors[$ord['status']] ?? 'secondary';
+      ?>
+      <div class="card mb-2">
+        <div class="card-body p-3">
+          <!-- Row 1: order number + status badge -->
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <a href="order_view.php?id=<?= $ord['id'] ?>" class="fw-bold text-primary"><?= htmlspecialchars($ord['order_number']) ?></a>
+            <select onchange="if(this.value)location.href='orders.php?action=update_status&id=<?= $ord['id'] ?>&status='+this.value"
+                    class="status-sel"
+                    style="background:<?= $stColor ?>;color:<?= $isDark?'#1f2937':'#fff' ?>;border-color:<?= $stColor ?>">
+              <?php foreach(['pending','processing','shipped','delivered','cancelled'] as $st): ?>
+                <option value="<?= $st ?>" <?= $ord['status']===$st?'selected':'' ?> style="background:#fff;color:#1f2937"><?= ucfirst($st) ?></option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+          <!-- Row 2: customer + date -->
+          <div class="small text-muted mb-2">
+            <i class="fas fa-user me-1"></i><?= htmlspecialchars($ord['customer_name'] ?? 'Walk-in') ?>
+            &nbsp;·&nbsp;
+            <i class="fas fa-calendar me-1"></i><?= date('d M Y', strtotime($ord['created_at'])) ?>
+            &nbsp;·&nbsp;
+            <?= $ord['item_count'] ?> item<?= $ord['item_count'] != 1 ? 's' : '' ?>
+          </div>
+          <!-- Row 3: total + actions -->
+          <div class="d-flex justify-content-between align-items-center">
+            <span class="fw-bold text-primary fs-6"><?= currency($ord['total']) ?></span>
+            <div class="d-flex gap-1">
+              <a href="order_view.php?id=<?= $ord['id'] ?>" class="btn btn-sm btn-outline-primary" title="View"><i class="fas fa-eye"></i></a>
+              <a href="order_sticker.php?id=<?= $ord['id'] ?>" target="_blank" class="btn btn-sm btn-outline-secondary" title="Print"><i class="fas fa-print"></i></a>
+              <a href="orders.php?action=delete&id=<?= $ord['id'] ?>" class="btn btn-sm btn-danger"
+                 onclick="return confirm('Delete this order?')" title="Delete"><i class="fas fa-trash"></i></a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <?php endforeach; ?>
+    <?php endif; ?>
+  </div>
+
 </div>
-<?php require_once 'includes/footer.php'; ?>
+<?php
+$lastTs = $conn->query("SELECT MAX(updated_at) AS ts FROM orders")->fetch_assoc()['ts'] ?? '';
+ob_start(); ?>
+<style>
+.status-sel {
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-size: .8rem;
+  font-weight: 600;
+  border-width: 2px;
+  border-style: solid;
+  cursor: pointer;
+  appearance: auto;
+}
+</style>
+<script>
+(function(){
+  var baseline = <?= json_encode($lastTs) ?>;
+  setInterval(function(){
+    fetch('orders.php?action=last_updated')
+      .then(function(r){ return r.json(); })
+      .then(function(d){ if(d.ts && d.ts !== baseline) location.reload(); })
+      .catch(function(){});
+  }, 8000);
+})();
+</script>
+<?php $extraJS = ob_get_clean();
+require_once 'includes/footer.php'; ?>
