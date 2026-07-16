@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 // ── Bootstrap before header (needed for AJAX + migration) ────────────────────
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once 'config.php';

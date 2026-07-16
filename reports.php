@@ -1,6 +1,11 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 $pageTitle = 'Reports & Analytics';
 require_once 'includes/header.php';
+
+// Ensure per-item cost snapshot column exists (idempotent; for profit calc)
+$conn->query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS cost DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER color");
 
 // ── Date range ───────────────────────────────────────────────────────────────────
 $from = sanitize($conn, $_GET['from'] ?? date('Y-m-01'));
@@ -20,6 +25,17 @@ $summary = $conn->query("
 
 $cancelled = $conn->query("SELECT COUNT(*) as c FROM orders WHERE DATE(created_at) BETWEEN '$from' AND '$to' AND status='cancelled'")->fetch_assoc()['c'];
 
+// ── Profit: revenue minus cost-of-goods (snapshot cost × qty) ─────────────────────
+$cogs = $conn->query("
+    SELECT COALESCE(SUM(oi.cost * oi.quantity),0) as cogs
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id
+    WHERE DATE(o.created_at) BETWEEN '$from' AND '$to' AND o.status != 'cancelled'
+")->fetch_assoc()['cogs'];
+$revenue = (float)$summary['revenue'];
+$profit  = $revenue - (float)$cogs;
+$margin  = $revenue > 0 ? ($profit / $revenue) * 100 : 0;
+
 // ── Daily chart (last 30 days in range) ──────────────────────────────────────────
 $dailySales = $conn->query("
     SELECT DATE(created_at) as day, COALESCE(SUM(total),0) as total, COUNT(*) as cnt
@@ -36,7 +52,8 @@ $chartCnt  = array_column($dailySales, 'cnt');
 $topProducts = $conn->query("
     SELECT oi.product_name,
            SUM(oi.quantity) as qty_sold,
-           SUM(oi.total_price) as revenue
+           SUM(oi.total_price) as revenue,
+           SUM(oi.total_price - oi.cost * oi.quantity) as profit
     FROM order_items oi
     JOIN orders o ON o.id = oi.order_id
     WHERE DATE(o.created_at) BETWEEN '$from' AND '$to' AND o.status != 'cancelled'
@@ -84,6 +101,15 @@ $statusBreakdown = $conn->query("
       <div class="stat-card d-flex align-items-center gap-3">
         <div class="stat-icon" style="background:#eff6ff"><i class="fas fa-dollar-sign" style="color:#3b82f6;font-size:1.4rem"></i></div>
         <div><div class="stat-value"><?= currency($summary['revenue']) ?></div><div class="stat-label">Revenue</div></div>
+      </div>
+    </div>
+    <div class="col-sm-6 col-xl-3">
+      <div class="stat-card d-flex align-items-center gap-3">
+        <div class="stat-icon" style="background:#ecfdf5"><i class="fas fa-hand-holding-dollar" style="color:#059669;font-size:1.4rem"></i></div>
+        <div>
+          <div class="stat-value" style="color:<?= $profit < 0 ? '#ef4444' : 'inherit' ?>"><?= currency($profit) ?></div>
+          <div class="stat-label">Profit <span class="text-muted">· <?= number_format($margin, 1) ?>% margin</span></div>
+        </div>
       </div>
     </div>
     <div class="col-sm-6 col-xl-3">
@@ -150,10 +176,10 @@ $statusBreakdown = $conn->query("
         <div class="card-header"><i class="fas fa-star me-2 text-warning"></i>Top Products</div>
         <div class="card-body p-0">
           <table class="table mb-0">
-            <thead><tr><th>#</th><th>Product</th><th class="text-center">Qty</th><th class="text-end">Revenue</th></tr></thead>
+            <thead><tr><th>#</th><th>Product</th><th class="text-center">Qty</th><th class="text-end">Revenue</th><th class="text-end">Profit</th></tr></thead>
             <tbody>
             <?php if (empty($topProducts)): ?>
-              <tr><td colspan="4" class="text-center py-4 text-muted">No data</td></tr>
+              <tr><td colspan="5" class="text-center py-4 text-muted">No data</td></tr>
             <?php else: ?>
               <?php foreach($topProducts as $i => $p): ?>
               <tr>
@@ -161,6 +187,7 @@ $statusBreakdown = $conn->query("
                 <td><?= htmlspecialchars($p['product_name']) ?></td>
                 <td class="text-center"><span class="badge bg-primary"><?= $p['qty_sold'] ?></span></td>
                 <td class="text-end fw-600"><?= currency($p['revenue']) ?></td>
+                <td class="text-end fw-600" style="color:<?= $p['profit'] < 0 ? '#ef4444' : '#059669' ?>"><?= currency($p['profit']) ?></td>
               </tr>
               <?php endforeach; ?>
             <?php endif; ?>

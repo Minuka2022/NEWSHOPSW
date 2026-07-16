@@ -61,3 +61,44 @@ function getPendingOrderCount($conn) {
     $r = $conn->query("SELECT COUNT(*) as cnt FROM orders WHERE status='pending'");
     return (int)$r->fetch_assoc()['cnt'];
 }
+
+// ─── Stock adjustment helpers ─────────────────────────────────────────────────
+// Add an order's quantities back into stock (per-color if the item has a color,
+// otherwise the product's main stock). Used when cancelling/deleting an order.
+function restoreOrderStock($conn, $order_id) {
+    $order_id = (int)$order_id;
+    $res = $conn->query("SELECT product_id, quantity, color FROM order_items WHERE order_id=$order_id");
+    while ($it = $res->fetch_assoc()) {
+        $pid = (int)$it['product_id'];
+        $qty = (int)$it['quantity'];
+        if (!$pid || $qty <= 0) continue;                 // product deleted or empty row
+        if (!empty($it['color'])) {
+            $stmt = $conn->prepare("UPDATE product_colors SET stock=stock+? WHERE product_id=? AND color_name=?");
+            $stmt->bind_param('iis', $qty, $pid, $it['color']);
+        } else {
+            $stmt = $conn->prepare("UPDATE products SET stock=stock+? WHERE id=?");
+            $stmt->bind_param('ii', $qty, $pid);
+        }
+        $stmt->execute();
+    }
+}
+
+// Take an order's quantities back out of stock. Used when an order returns from
+// cancelled to an active status.
+function deductOrderStock($conn, $order_id) {
+    $order_id = (int)$order_id;
+    $res = $conn->query("SELECT product_id, quantity, color FROM order_items WHERE order_id=$order_id");
+    while ($it = $res->fetch_assoc()) {
+        $pid = (int)$it['product_id'];
+        $qty = (int)$it['quantity'];
+        if (!$pid || $qty <= 0) continue;
+        if (!empty($it['color'])) {
+            $stmt = $conn->prepare("UPDATE product_colors SET stock=stock-? WHERE product_id=? AND color_name=?");
+            $stmt->bind_param('iis', $qty, $pid, $it['color']);
+        } else {
+            $stmt = $conn->prepare("UPDATE products SET stock=stock-? WHERE id=?");
+            $stmt->bind_param('ii', $qty, $pid);
+        }
+        $stmt->execute();
+    }
+}

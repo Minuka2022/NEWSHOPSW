@@ -12,6 +12,11 @@ define('APP_VERSION',   '1.0');
 define('STORE_ADDRESS', '');   // e.g. "123 Main St, Colombo 07"
 define('STORE_PHONE',   '');   // e.g. "077 123 4567"
 
+// ─── Login ────────────────────────────────────────────────────────────────────
+// Password required to open the manager. Change this before handing the system
+// over. To disable the login entirely, set it to an empty string ''.
+define('APP_PASSWORD',  'changeme');
+
 // ─── Dynamic Base URL ─────────────────────────────────────────────────────────
 // BASE_URL   — uses whatever host the browser used (localhost or LAN IP).
 //              Makes all navigation links work on any device automatically.

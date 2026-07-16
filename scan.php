@@ -11,6 +11,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['status']) && $id) {
     $status  = sanitize($conn, $_POST['status']);
     $allowed = ['pending','processing','shipped','delivered','cancelled'];
     if (in_array($status, $allowed)) {
+        $cur = $conn->query("SELECT status FROM orders WHERE id=$id LIMIT 1")->fetch_assoc();
+        $old = $cur['status'] ?? '';
+        if ($old !== 'cancelled' && $status === 'cancelled') restoreOrderStock($conn, $id);
+        if ($old === 'cancelled' && $status !== 'cancelled') deductOrderStock($conn, $id);
         $conn->query("UPDATE orders SET status='$status' WHERE id=$id");
     }
     header('Location: scan.php?id=' . $id . '&done=1');

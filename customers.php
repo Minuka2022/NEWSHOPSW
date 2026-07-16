@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 // ── Bootstrap (no HTML output yet, so redirects are safe) ───────────────────────────
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once 'config.php';

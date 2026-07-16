@@ -1,9 +1,14 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 // Bootstrap without HTML output
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once 'config.php';
 require_once 'includes/db.php';
 require_once 'includes/functions.php';
+
+// Ensure per-item cost snapshot column exists (idempotent; used for profit reports)
+$conn->query("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS cost DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER color");
 
 $action = $_GET['action'] ?? 'list';
 
@@ -55,6 +60,9 @@ if ($action === 'product_search') {
 // ── Delete order ──────────────────────────────────────────────────────────────────
 if ($action === 'delete' && isset($_GET['id'])) {
     $oid = (int)$_GET['id'];
+    // Return stock to inventory unless this order was already cancelled (already restored)
+    $cur = $conn->query("SELECT status FROM orders WHERE id=$oid LIMIT 1")->fetch_assoc();
+    if ($cur && $cur['status'] !== 'cancelled') restoreOrderStock($conn, $oid);
     $conn->query("DELETE FROM order_items WHERE order_id=$oid");
     $conn->query("DELETE FROM orders WHERE id=$oid");
     flash('success', 'Order deleted.');
@@ -67,6 +75,11 @@ if ($action === 'update_status' && isset($_GET['id'], $_GET['status'])) {
     $status = sanitize($conn, $_GET['status']);
     $allowed = ['pending','processing','shipped','delivered','cancelled'];
     if (in_array($status, $allowed)) {
+        $cur = $conn->query("SELECT status FROM orders WHERE id=$oid LIMIT 1")->fetch_assoc();
+        $old = $cur['status'] ?? '';
+        // Cancelling an active order returns its stock; un-cancelling takes it back out
+        if ($old !== 'cancelled' && $status === 'cancelled') restoreOrderStock($conn, $oid);
+        if ($old === 'cancelled' && $status !== 'cancelled') deductOrderStock($conn, $oid);
         $conn->query("UPDATE orders SET status='$status' WHERE id=$oid");
         flash('success', 'Order status updated.');
     }
@@ -113,12 +126,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
         $stmt->execute();
         $order_id = $conn->insert_id;
 
-        $stmt2  = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?)");
+        $stmt2  = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color,cost) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?,(SELECT cost FROM products WHERE id=?))");
         $stmt3  = $conn->prepare("UPDATE products       SET stock=stock-? WHERE id=?          AND stock>=?");
         $stmt3c = $conn->prepare("UPDATE product_colors SET stock=stock-? WHERE product_id=? AND color_name=? AND stock>=?");
 
         foreach ($items as [$pid, $qty, $up, $tp, $color]) {
-            $stmt2->bind_param('iiiidds', $order_id, $pid, $pid, $qty, $up, $tp, $color);
+            $stmt2->bind_param('iiiiddsi', $order_id, $pid, $pid, $qty, $up, $tp, $color, $pid);
             $stmt2->execute();
             if ($color) {
                 // Decrement per-color stock
@@ -141,14 +154,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'new') {
     }
 }
 
+// ── Save edited order ───────────────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'edit') {
+    $oid = (int)($_GET['id'] ?? 0);
+    $cur = $conn->query("SELECT status FROM orders WHERE id=$oid LIMIT 1")->fetch_assoc();
+    if (!$cur) { flash('danger', 'Order not found.'); redirect(BASE_URL . '/orders.php'); }
+    if ($cur['status'] === 'cancelled') {
+        flash('danger', 'Cancelled orders cannot be edited.');
+        redirect(BASE_URL . '/order_view.php?id=' . $oid);
+    }
+
+    $cust_id_raw = (int)($_POST['customer_id'] ?? 0) ?: null;
+    $ship_addr   = sanitize($conn, $_POST['shipping_address'] ?? '');
+    $notes       = sanitize($conn, $_POST['notes'] ?? '');
+    $discount    = (float)($_POST['discount'] ?? 0);
+    $prod_ids    = $_POST['product_id']  ?? [];
+    $quantities  = $_POST['quantity']    ?? [];
+    $prices      = $_POST['unit_price']  ?? [];
+    $item_colors = $_POST['item_color']  ?? [];
+
+    if (empty($prod_ids) || count(array_filter($quantities)) === 0) {
+        flash('danger', 'Please add at least one item to the order.');
+        redirect(BASE_URL . '/orders.php?action=edit&id=' . $oid);
+    }
+
+    $subtotal = 0;
+    $items    = [];
+    foreach ($prod_ids as $idx => $pid) {
+        $pid   = (int)$pid;
+        $qty   = (int)($quantities[$idx] ?? 0);
+        $up    = (float)($prices[$idx]   ?? 0);
+        $color = sanitize($conn, $item_colors[$idx] ?? '');
+        if ($pid && $qty > 0) {
+            $tp = $qty * $up;
+            $subtotal += $tp;
+            $items[] = [$pid, $qty, $up, $tp, $color];
+        }
+    }
+    $total = max(0, $subtotal - $discount);
+
+    $conn->begin_transaction();
+    try {
+        // Reverse the previous stock deduction, then clear old items
+        restoreOrderStock($conn, $oid);
+        $conn->query("DELETE FROM order_items WHERE order_id=$oid");
+
+        $stmt = $conn->prepare("UPDATE orders SET customer_id=?,subtotal=?,discount=?,total=?,notes=?,shipping_address=? WHERE id=?");
+        $stmt->bind_param('idddssi', $cust_id_raw, $subtotal, $discount, $total, $notes, $ship_addr, $oid);
+        $stmt->execute();
+
+        $stmt2  = $conn->prepare("INSERT INTO order_items (order_id,product_id,product_name,quantity,unit_price,total_price,color,cost) VALUES (?,?,(SELECT name FROM products WHERE id=?),?,?,?,?,(SELECT cost FROM products WHERE id=?))");
+        $stmt3  = $conn->prepare("UPDATE products       SET stock=stock-? WHERE id=?          AND stock>=?");
+        $stmt3c = $conn->prepare("UPDATE product_colors SET stock=stock-? WHERE product_id=? AND color_name=? AND stock>=?");
+
+        foreach ($items as [$pid, $qty, $up, $tp, $color]) {
+            $stmt2->bind_param('iiiiddsi', $oid, $pid, $pid, $qty, $up, $tp, $color, $pid);
+            $stmt2->execute();
+            if ($color) {
+                $stmt3c->bind_param('iisi', $qty, $pid, $color, $qty);
+                $stmt3c->execute();
+            } else {
+                $stmt3->bind_param('iii', $qty, $pid, $qty);
+                $stmt3->execute();
+            }
+        }
+
+        $conn->commit();
+        flash('success', 'Order updated successfully.');
+        redirect(BASE_URL . '/order_view.php?id=' . $oid);
+    } catch (Exception $e) {
+        $conn->rollback();
+        flash('danger', 'Error updating order: ' . $e->getMessage());
+        redirect(BASE_URL . '/orders.php?action=edit&id=' . $oid);
+    }
+}
+
 // ── From here on we need HTML ─────────────────────────────────────────────────────
 $pageTitle = 'Orders';
 require_once 'includes/header.php';
 
-// ── New Order Form ────────────────────────────────────────────────────────────────
-if ($action === 'new') {
+// ── New / Edit Order Form ───────────────────────────────────────────────────────────
+if ($action === 'new' || $action === 'edit') {
+    $isEdit    = ($action === 'edit');
+    $editId    = (int)($_GET['id'] ?? 0);
+    $editOrder = null;
+    $prefillItems = [];
+    $prefillDiscount = 0;
+    $prefillNotes    = '';
+    $prefillShip     = '';
+
+    if ($isEdit) {
+        $editOrder = $conn->query("SELECT * FROM orders WHERE id=$editId LIMIT 1")->fetch_assoc();
+        if (!$editOrder) { flash('danger', 'Order not found.'); redirect(BASE_URL . '/orders.php'); }
+        if ($editOrder['status'] === 'cancelled') {
+            flash('danger', 'Cancelled orders cannot be edited.');
+            redirect(BASE_URL . '/order_view.php?id=' . $editId);
+        }
+        $prefillDiscount = (float)$editOrder['discount'];
+        $prefillNotes    = $editOrder['notes'];
+        $prefillShip     = $editOrder['shipping_address'];
+        // Build prefill items with each product's current color list
+        $itRes = $conn->query("SELECT * FROM order_items WHERE order_id=$editId ORDER BY id");
+        while ($it = $itRes->fetch_assoc()) {
+            $pcolors = [];
+            if ($it['product_id']) {
+                $cr = $conn->query("SELECT color_name, stock FROM product_colors WHERE product_id=" . (int)$it['product_id'] . " ORDER BY color_name");
+                while ($c = $cr->fetch_assoc()) $pcolors[] = ['name' => $c['color_name'], 'stock' => (int)$c['stock']];
+            }
+            $prefillItems[] = [
+                'id'     => (int)$it['product_id'],
+                'name'   => $it['product_name'],
+                'price'  => (float)$it['unit_price'],
+                'qty'    => (int)$it['quantity'],
+                'color'  => $it['color'] ?? '',
+                'colors' => $pcolors,
+            ];
+        }
+    }
+
     $customers = $conn->query("SELECT id,name,phone,address FROM customers ORDER BY name")->fetch_all(MYSQLI_ASSOC);
-    $selCust   = (int)($_GET['customer_id'] ?? 0);
+    $selCust   = $isEdit ? (int)($editOrder['customer_id'] ?? 0) : (int)($_GET['customer_id'] ?? 0);
     $custData  = [];
     if ($selCust) {
         $r = $conn->query("SELECT * FROM customers WHERE id=$selCust LIMIT 1");
@@ -179,10 +304,10 @@ if ($action === 'new') {
     ?>
     <div class="container-fluid">
       <div class="d-flex align-items-center mb-4 gap-3">
-        <a href="orders.php" class="btn btn-outline-secondary btn-sm"><i class="fas fa-arrow-left"></i> Back</a>
-        <h5 class="mb-0 fw-bold">New Order</h5>
+        <a href="<?= $isEdit ? 'order_view.php?id=' . $editId : 'orders.php' ?>" class="btn btn-outline-secondary btn-sm"><i class="fas fa-arrow-left"></i> Back</a>
+        <h5 class="mb-0 fw-bold"><?= $isEdit ? 'Edit Order ' . htmlspecialchars($editOrder['order_number']) : 'New Order' ?></h5>
       </div>
-      <form method="POST" action="orders.php?action=new" id="orderForm">
+      <form method="POST" action="orders.php?action=<?= $isEdit ? 'edit&id=' . $editId : 'new' ?>" id="orderForm">
         <div class="row g-3">
 
           <!-- Left: Customer & Details -->
@@ -210,7 +335,7 @@ if ($action === 'new') {
               <div class="card-header"><i class="fas fa-truck me-2"></i>Shipping</div>
               <div class="card-body">
                 <label class="form-label">Shipping Address</label>
-                <textarea name="shipping_address" id="shipAddr" class="form-control" rows="3"><?= htmlspecialchars($custData['address'] ?? '') ?></textarea>
+                <textarea name="shipping_address" id="shipAddr" class="form-control" rows="3"><?= htmlspecialchars($isEdit ? $prefillShip : ($custData['address'] ?? '')) ?></textarea>
               </div>
             </div>
 
@@ -223,7 +348,7 @@ if ($action === 'new') {
                 </div>
                 <div class="mb-2">
                   <label class="form-label">Discount (<?= CURRENCY ?>)</label>
-                  <input type="number" step="0.01" min="0" name="discount" id="discountInput" class="form-control" value="0" oninput="calcTotal()">
+                  <input type="number" step="0.01" min="0" name="discount" id="discountInput" class="form-control" value="<?= $isEdit ? htmlspecialchars($prefillDiscount) : '0' ?>" oninput="calcTotal()">
                 </div>
                 <hr>
                 <div class="d-flex justify-content-between fw-bold fs-5">
@@ -232,10 +357,10 @@ if ($action === 'new') {
                 </div>
                 <div class="mt-3">
                   <label class="form-label">Order Notes</label>
-                  <textarea name="notes" class="form-control" rows="2" placeholder="Optional..."></textarea>
+                  <textarea name="notes" class="form-control" rows="2" placeholder="Optional..."><?= htmlspecialchars($isEdit ? $prefillNotes : '') ?></textarea>
                 </div>
                 <button type="submit" class="btn btn-success w-100 mt-3 py-2">
-                  <i class="fas fa-check-circle me-2"></i>Create Order
+                  <i class="fas fa-check-circle me-2"></i><?= $isEdit ? 'Update Order' : 'Create Order' ?>
                 </button>
               </div>
             </div>
@@ -317,11 +442,13 @@ function fillAddress(sel) {
     document.getElementById("shipAddr").value = opt.getAttribute("data-address") || "";
 }
 
-function addItem(id, name, price, colors) {
-    id     = id    || 0;
-    name   = name  || "";
-    price  = parseFloat(price) || 0;
-    colors = colors || [];
+function addItem(id, name, price, colors, qty, selColor) {
+    id      = id    || 0;
+    name    = name  || "";
+    price   = parseFloat(price) || 0;
+    colors  = colors || [];
+    qty     = parseInt(qty) || 1;
+    selColor = selColor || "";
 
     var div = document.createElement("div");
     div.className = "order-item-row d-flex align-items-center gap-2 mb-1";
@@ -339,7 +466,7 @@ function addItem(id, name, price, colors) {
     var qtyInput = document.createElement("input");
     qtyInput.type = "number"; qtyInput.name = "quantity[]";
     qtyInput.className = "form-control form-control-sm qty";
-    qtyInput.min = "1"; qtyInput.value = "1"; qtyInput.required = true;
+    qtyInput.min = "1"; qtyInput.value = qty; qtyInput.required = true;
     qtyInput.addEventListener("input", function(){ updateRow(this); });
     qtyWrap.appendChild(qtyInput);
 
@@ -355,6 +482,7 @@ function addItem(id, name, price, colors) {
             opt.textContent = c.name + " (" + c.stock + ")";
             colorSel.appendChild(opt);
         });
+        if (selColor) colorSel.value = selColor;
         colorWrap.appendChild(colorSel);
     } else {
         var hc = document.createElement("input");
@@ -375,7 +503,7 @@ function addItem(id, name, price, colors) {
 
     var totalDiv = document.createElement("div");
     totalDiv.style.width = "90px"; totalDiv.className = "text-end fw-600 rowtotal";
-    totalDiv.textContent = CURRENCY + price.toFixed(2);
+    totalDiv.textContent = CURRENCY + (qty * price).toFixed(2);
 
     var delBtn = document.createElement("button");
     delBtn.type = "button"; delBtn.className = "btn btn-sm btn-outline-danger";
@@ -440,8 +568,17 @@ document.getElementById("productSearch").addEventListener("input", function() {
     });
 });
 
+// ── Prefill existing items (edit mode) ──────────────────────────────────────
+var IS_EDIT = <?= $isEdit ? 'true' : 'false' ?>;
+var PREFILL = <?= json_encode($prefillItems) ?>;
+PREFILL.forEach(function(it){
+    addItem(it.id, it.name, it.price, it.colors, it.qty, it.color);
+});
+
+// Auto-fill address from customer only when creating a new order (don't clobber
+// a saved shipping address when editing).
 var custSel = document.getElementById("custSelect");
-if (custSel && custSel.value) fillAddress(custSel);
+if (!IS_EDIT && custSel && custSel.value) fillAddress(custSel);
 </script>
     <?php
     $extraJS = ob_get_clean();

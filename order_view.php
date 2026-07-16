@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 // ── Bootstrap (no HTML output yet) ───────────────────────────────────────────
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once 'config.php';
@@ -10,6 +12,8 @@ if (!$id) { flash('danger','Invalid order.'); redirect(BASE_URL.'/orders.php'); 
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 if (isset($_GET['delete'])) {
+    $cur = $conn->query("SELECT status FROM orders WHERE id=$id LIMIT 1")->fetch_assoc();
+    if ($cur && $cur['status'] !== 'cancelled') restoreOrderStock($conn, $id);
     $conn->query("DELETE FROM order_items WHERE order_id=$id");
     $conn->query("DELETE FROM orders WHERE id=$id");
     flash('success', 'Order deleted.');
@@ -21,6 +25,10 @@ if (isset($_GET['set_status'])) {
     $st      = sanitize($conn, $_GET['set_status']);
     $allowed = ['pending','processing','shipped','delivered','cancelled'];
     if (in_array($st, $allowed)) {
+        $cur = $conn->query("SELECT status FROM orders WHERE id=$id LIMIT 1")->fetch_assoc();
+        $old = $cur['status'] ?? '';
+        if ($old !== 'cancelled' && $st === 'cancelled') restoreOrderStock($conn, $id);
+        if ($old === 'cancelled' && $st !== 'cancelled') deductOrderStock($conn, $id);
         $conn->query("UPDATE orders SET status='$st' WHERE id=$id");
         flash('success', 'Status updated to ' . ucfirst($st));
     }
@@ -66,6 +74,11 @@ require_once 'includes/header.php';
       <?php if (isset($nextStatus[$order['status']])): ?>
         <a href="?id=<?= $id ?>&set_status=<?= $nextStatus[$order['status']] ?>" class="btn btn-success btn-sm">
           <i class="fas fa-arrow-right me-1"></i>Mark <?= ucfirst($nextStatus[$order['status']]) ?>
+        </a>
+      <?php endif; ?>
+      <?php if ($order['status'] !== 'cancelled'): ?>
+        <a href="orders.php?action=edit&id=<?= $id ?>" class="btn btn-outline-primary btn-sm">
+          <i class="fas fa-pen me-1"></i><span class="d-none d-sm-inline">Edit</span>
         </a>
       <?php endif; ?>
       <a href="order_sticker.php?id=<?= $id ?>" target="_blank" class="btn btn-primary btn-sm">

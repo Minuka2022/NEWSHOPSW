@@ -79,7 +79,12 @@ $currentPage = basename($_SERVER['PHP_SELF']);
       <a href="<?= BASE_URL ?>/orders.php?action=new" class="btn btn-primary btn-sm">
         <i class="fas fa-plus"></i> New Order
       </a>
-      <span class="text-muted small"><?= date('D, d M Y') ?></span>
+      <span class="text-muted small d-none d-sm-inline"><?= date('D, d M Y') ?></span>
+      <?php if (function_exists('loginEnabled') && loginEnabled()): ?>
+        <a href="<?= BASE_URL ?>/logout.php" class="btn btn-outline-secondary btn-sm" title="Log out">
+          <i class="fas fa-right-from-bracket"></i><span class="d-none d-sm-inline"> Logout</span>
+        </a>
+      <?php endif; ?>
     </div>
   </header>
 

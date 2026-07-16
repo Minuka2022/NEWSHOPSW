@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     unit_price   DECIMAL(10,2) NOT NULL,
     total_price  DECIMAL(10,2) NOT NULL,
     color        VARCHAR(100) DEFAULT NULL,
+    cost         DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     FOREIGN KEY (order_id)   REFERENCES orders(id)   ON DELETE CASCADE,
     FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
 );
@@ -116,6 +117,7 @@ foreach (array_filter(array_map('trim', explode(';', $sql_tables))) as $sql) {
 $conn->query("ALTER TABLE order_items    ADD COLUMN IF NOT EXISTS color VARCHAR(100) DEFAULT NULL AFTER total_price");
 $conn->query("ALTER TABLE product_colors ADD COLUMN IF NOT EXISTS stock INT NOT NULL DEFAULT 0   AFTER color_name");
 $conn->query("ALTER TABLE categories     ADD COLUMN IF NOT EXISTS sku_prefix VARCHAR(20) NOT NULL DEFAULT '' AFTER name");
+$conn->query("ALTER TABLE order_items    ADD COLUMN IF NOT EXISTS cost DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER color");
 $success[] = 'Column migrations applied';
 
 // ── Seed categories (if empty or force) ──────────────────────────────────────────
