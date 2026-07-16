@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
 require_once 'config.php';
 require_once 'includes/db.php';
 require_once 'includes/functions.php';
@@ -15,7 +17,7 @@ $orders = $conn->query("
 // Pre-load items for each order
 $orderItems = [];
 if ($orders) {
-    $ids = implode(',', array_column($orders, 'id'));
+    $ids  = implode(',', array_column($orders, 'id'));
     $rows = $conn->query("SELECT * FROM order_items WHERE order_id IN ($ids) ORDER BY order_id, id")->fetch_all(MYSQLI_ASSOC);
     foreach ($rows as $row) {
         $orderItems[$row['order_id']][] = $row;
@@ -28,7 +30,6 @@ if ($orders) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Print Pending Labels — <?= SITE_NAME ?></title>
-<link href="https://fonts.googleapis.com/css2?family=Libre+Barcode+39+Text&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
@@ -90,22 +91,12 @@ body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
 .s-meta { text-align: right; font-size: 0.68rem; line-height: 2; }
 .s-meta .meta-no { font-size: 0.95rem; font-weight: bold; color: #cc0000; }
 
-/* Barcode strip */
-.s-bc-strip {
-  border-bottom: 1px solid #ccc;
-  text-align: center; height: 30px;
-  overflow: hidden; padding: 0 6px; line-height: 1;
-}
-.s-bc-strip span {
-  font-family: 'Libre Barcode 39 Text', monospace;
-  font-size: 2.4rem; color: #111;
-  letter-spacing: 1px; vertical-align: top;
-}
-
 /* From */
 .s-from {
   padding: 5px 12px;
-  font-size: 0.68rem; line-height: 1.7; color: #444;
+  font-size: 0.68rem;
+  line-height: 1.7;
+  color: #444;
   border-bottom: 2px solid #111;
 }
 
@@ -120,31 +111,48 @@ body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
 
 /* COD */
 .s-cod {
-  padding: 7px 12px; font-size: 1rem; font-weight: bold;
-  border-top: 1px solid #888; border-bottom: 2px solid #111;
+  padding: 7px 12px;
+  font-size: 1rem;
+  font-weight: bold;
+  border-top: 1px solid #888;
+  border-bottom: 1px solid #ccc;
 }
 
-/* Items */
-.s-bottom { display: flex; align-items: flex-start; padding: 8px 12px 10px; gap: 10px; min-height: 60px; }
+/* Items + QR */
+.s-bottom {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 12px 10px;
+  gap: 10px;
+  min-height: 60px;
+  border-bottom: 1px solid #ccc;
+}
 .s-items-list { flex: 1; font-size: 0.8rem; line-height: 2.1; }
 .s-item-row { display: flex; align-items: baseline; gap: 5px; }
 .s-item-nm  { flex: 1; }
 .s-item-qty { color: #555; }
 .s-item-color { font-weight: bold; }
 
-/* Red barcode box */
-.s-bc-box {
-  background: #cc0000; color: #fff;
-  border-radius: 3px; padding: 5px 7px;
-  text-align: center; min-width: 95px;
-  align-self: flex-end;
+/* QR code */
+.s-qr { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.s-qr canvas, .s-qr img { display: block; }
+.s-qr-lbl { font-size: 0.55rem; color: #666; text-align: center; }
+
+/* Delivery sticker spaces */
+.s-delivery-spaces { display: flex; gap: 8px; padding: 8px 12px 10px; }
+.s-delivery-box {
+  flex: 1;
+  height: 55px;
+  border: 2px dashed #aaa;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  color: #bbb;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
-.bc-font {
-  font-family: 'Libre Barcode 39 Text', monospace;
-  font-size: 1.6rem; line-height: 1; display: block;
-  color: #fff; letter-spacing: 1px;
-}
-.bc-num { font-size: 0.55rem; letter-spacing: .5px; word-break: break-all; margin-top: 2px; display: block; }
 
 /* No orders */
 .no-orders {
@@ -167,9 +175,9 @@ body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
 
 <div class="controls">
   <h4>&#128438; Print Pending Order Labels <span class="count-badge"><?= count($orders) ?> pending</span></h4>
-  <p>Each label prints on a separate page. Set paper to A5 / A6 / 10×15 cm for best results.</p>
+  <p>Each label prints on a separate page. Set paper to A5 / A6 / 10&times;15 cm for best results.</p>
   <?php if ($orders): ?>
-    <button onclick="window.print()">&#128438; Print All Labels</button>
+    <button onclick="printWhenReady()">&#128438; Print All Labels</button>
   <?php endif; ?>
   <button class="btn-back" onclick="history.back()">&#8592; Back to Orders</button>
 </div>
@@ -203,11 +211,6 @@ body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
       </div>
     </div>
 
-    <!-- Barcode strip -->
-    <div class="s-bc-strip">
-      <span>*<?= htmlspecialchars($order['order_number']) ?>*</span>
-    </div>
-
     <!-- From -->
     <div class="s-from">
       <strong>From:</strong>&nbsp;<?= htmlspecialchars(SITE_NAME) ?><br>
@@ -237,31 +240,63 @@ body { background: #d1d5db; font-family: Arial, sans-serif; padding: 20px; }
 
     <!-- COD Amount -->
     <div class="s-cod">
-      COD Amount:&nbsp;&nbsp;<?= number_format((float)$order['total'], 2) ?>
+      COD Amount:&nbsp;&nbsp;<?= CURRENCY . number_format((float)$order['total'], 2) ?>
     </div>
 
-    <!-- Items + barcode -->
+    <!-- Items + QR -->
     <div class="s-bottom">
       <div class="s-items-list">
         <?php foreach ($items as $item): ?>
           <div class="s-item-row">
-            <span class="s-item-nm"><?= htmlspecialchars($item['product_name']) ?>-</span>
-            <span class="s-item-qty"><?= (int)$item['quantity'] ?></span>
+            <span class="s-item-nm"><?= htmlspecialchars($item['product_name']) ?> &times;<?= (int)$item['quantity'] ?></span>
             <?php if (!empty($item['color'])): ?>
               <span class="s-item-color"><?= htmlspecialchars($item['color']) ?></span>
             <?php endif; ?>
           </div>
         <?php endforeach; ?>
       </div>
-      <div class="s-bc-box">
-        <span class="bc-font">*<?= $shortNo ?>*</span>
-        <span class="bc-num"><?= htmlspecialchars($order['order_number']) ?></span>
+
+      <div class="s-qr">
+        <div id="qrcode-<?= $order['id'] ?>"></div>
+        <span class="s-qr-lbl">Scan to update status</span>
       </div>
+    </div>
+
+    <!-- Two delivery company sticker spaces -->
+    <div class="s-delivery-spaces">
+      <div class="s-delivery-box">Delivery Sticker</div>
+      <div class="s-delivery-box">Delivery Sticker</div>
     </div>
 
   </div>
 </div>
 <?php endforeach; ?>
 
+<script src="<?= BASE_URL ?>/assets/vendor/qrcode/qrcode.min.js"></script>
+<script>
+var qrData = <?= json_encode(array_map(fn($o) => [
+    'id'  => $o['id'],
+    'url' => SCAN_BASE_URL . '/scan.php?id=' . $o['id']
+], $orders)) ?>;
+
+qrData.forEach(function(item) {
+  var el = document.getElementById("qrcode-" + item.id);
+  if (el) {
+    new QRCode(el, {
+      text: item.url,
+      width: 72,
+      height: 72,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M
+    });
+  }
+});
+
+// Wait for QR codes to render before opening print dialog
+function printWhenReady() {
+  setTimeout(function() { window.print(); }, 300);
+}
+</script>
 </body>
 </html>

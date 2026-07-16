@@ -401,8 +401,41 @@ body {
 
 /* ── Responsive ── */
 @media (max-width: 768px) {
-  .sidebar { width: 64px; }
-  .sidebar .sidebar-brand span,
-  .sidebar .nav-link span { display: none; }
-  .main-wrapper { margin-left: 64px; }
+  /* Sidebar hides off-screen; slides in when toggled */
+  .sidebar {
+    transform: translateX(-240px);
+    width: 240px;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+  }
+  .sidebar.mobile-open {
+    transform: translateX(0);
+    box-shadow: 6px 0 24px rgba(0,0,0,0.35);
+  }
+  /* Collapsed class has no effect on mobile — keep full width */
+  .sidebar.collapsed { width: 240px; }
+  .sidebar.collapsed .sidebar-brand span,
+  .sidebar.collapsed .nav-link span,
+  .sidebar.collapsed .nav-link .badge,
+  .sidebar.collapsed .sidebar-footer { display: revert; }
+
+  /* Main fills full screen */
+  .main-wrapper { margin-left: 0 !important; }
+
+  /* Dim overlay behind sidebar */
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 999;
+  }
+  .sidebar-overlay.active { display: block; }
+
+  /* Smaller topbar padding */
+  .topbar { padding: 0 14px; }
+  .page-content { padding: 16px; }
+
+  /* Stat value smaller on mobile */
+  .stat-value { font-size: 1.4rem; }
+  .stat-card { padding: 16px; }
 }

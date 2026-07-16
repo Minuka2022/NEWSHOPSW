@@ -1,11 +1,54 @@
 <?php
+require_once __DIR__ . '/includes/auth.php';
+requireLogin();
+// ── Bootstrap before header (needed for AJAX + migration) ────────────────────
+if (session_status() === PHP_SESSION_NONE) session_start();
+require_once 'config.php';
+require_once 'includes/db.php';
+require_once 'includes/functions.php';
+
+// ── Migration: add sku_prefix to categories ───────────────────────────────────
+$conn->query("ALTER TABLE categories ADD COLUMN IF NOT EXISTS sku_prefix VARCHAR(20) NOT NULL DEFAULT ''");
+
+// Auto-populate prefix for existing categories that have none
+$conn->query("UPDATE categories SET sku_prefix = CASE
+    WHEN LOWER(name) LIKE '%handbag%' OR LOWER(name) LIKE '%hand bag%' THEN 'HBG-'
+    WHEN LOWER(name) LIKE '%denim%' OR LOWER(name) LIKE '%jean%'       THEN 'DNM-'
+    WHEN LOWER(name) LIKE '%tds%'                                       THEN 'TDS-'
+    WHEN LOWER(name) LIKE '%valve%'                                     THEN 'WV-'
+    WHEN LOWER(name) LIKE '%nail gun%' OR LOWER(name) LIKE '%nailgun%' THEN 'NG-'
+    WHEN LOWER(name) LIKE '%frock%' OR LOWER(name) LIKE '%dress%'      THEN 'FRK-'
+    WHEN LOWER(name) LIKE '%ladies%' AND LOWER(name) LIKE '%shirt%'    THEN 'LTS-'
+    WHEN LOWER(name) LIKE '%t-shirt%' OR LOWER(name) LIKE '%tshirt%'   THEN 'TS-'
+    ELSE sku_prefix END
+    WHERE sku_prefix = ''");
+
+// ── AJAX: suggest next sequential SKU for a prefix ───────────────────────────
+if (($_GET['action'] ?? '') === 'suggest_sku') {
+    header('Content-Type: application/json');
+    $prefix = sanitize($conn, $_GET['prefix'] ?? '');
+    if (!$prefix) { echo json_encode(['sku' => '']); exit; }
+    $like = $conn->real_escape_string($prefix);
+    $res  = $conn->query("SELECT sku FROM products WHERE sku LIKE '$like%' AND active=1 ORDER BY id DESC LIMIT 50");
+    $maxNum = 0;
+    while ($row = $res->fetch_assoc()) {
+        $suffix = substr($row['sku'], strlen($prefix));
+        if (preg_match('/^(\d+)/', $suffix, $m)) {
+            $maxNum = max($maxNum, (int)$m[1]);
+        }
+    }
+    $next = str_pad($maxNum + 1, 3, '0', STR_PAD_LEFT);
+    echo json_encode(['sku' => $prefix . $next]);
+    exit;
+}
+
 $pageTitle = 'Products';
 require_once 'includes/header.php';
 
 $action = $_GET['action'] ?? 'list';
 $id     = (int)($_GET['id'] ?? 0);
 
-// ── Add color (with stock) ────────────────────────────────────────────────────────
+// ── Add color (with stock) ────────────────────────────────────────────────────
 if ($action === 'add_color' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $pid   = (int)($_POST['product_id'] ?? 0);
     $color = sanitize($conn, trim($_POST['color_name'] ?? ''));
@@ -19,7 +62,7 @@ if ($action === 'add_color' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(BASE_URL . "/products.php?action=edit&id=$pid");
 }
 
-// ── Update color stock ────────────────────────────────────────────────────────────
+// ── Update color stock ────────────────────────────────────────────────────────
 if ($action === 'update_color_stock' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $color_id = (int)($_POST['color_id'] ?? 0);
     $stock    = max(0, (int)($_POST['stock'] ?? 0));
@@ -34,7 +77,7 @@ if ($action === 'update_color_stock' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(BASE_URL . '/products.php');
 }
 
-// ── Delete color ──────────────────────────────────────────────────────────────────
+// ── Delete color ──────────────────────────────────────────────────────────────
 if ($action === 'delete_color' && $id) {
     $row = $conn->query("SELECT product_id FROM product_colors WHERE id=$id LIMIT 1")->fetch_assoc();
     $conn->query("DELETE FROM product_colors WHERE id=$id");
@@ -42,7 +85,7 @@ if ($action === 'delete_color' && $id) {
     redirect(BASE_URL . "/products.php?action=edit&id=" . ($row['product_id'] ?? ''));
 }
 
-// ── Delete product ────────────────────────────────────────────────────────────────
+// ── Delete product ────────────────────────────────────────────────────────────
 if ($action === 'delete' && $id) {
     $stmt = $conn->prepare("UPDATE products SET active=0 WHERE id=?");
     $stmt->bind_param('i', $id);
@@ -51,11 +94,11 @@ if ($action === 'delete' && $id) {
     redirect(BASE_URL . '/products.php');
 }
 
-// ── Save product (Add/Edit) ───────────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+// ── Save product (Add/Edit) ───────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !in_array($action, ['add_color','update_color_stock'])) {
     $pid    = (int)($_POST['id'] ?? 0);
     $name   = sanitize($conn, $_POST['name'] ?? '');
-    $cat_id = (int)($_POST['category_id'] ?? 0) ?: 'NULL';
+    $cat_id = (int)($_POST['category_id'] ?? 0) ?: null;
     $sku    = sanitize($conn, $_POST['sku']  ?? '');
     $desc   = sanitize($conn, $_POST['description'] ?? '');
     $price  = (float)($_POST['price'] ?? 0);
@@ -82,15 +125,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(BASE_URL . '/products.php');
 }
 
-// ── Fetch categories ──────────────────────────────────────────────────────────────
+// ── Fetch categories ──────────────────────────────────────────────────────────
 $categories = $conn->query("SELECT * FROM categories ORDER BY name")->fetch_all(MYSQLI_ASSOC);
 
-// ── Add / Edit Form ───────────────────────────────────────────────────────────────
+// ── Add / Edit Form ───────────────────────────────────────────────────────────
 if ($action === 'add' || $action === 'edit') {
     $prod = ['id'=>0,'category_id'=>'','name'=>'','sku'=>'','description'=>'','price'=>'','cost'=>'','stock'=>0,'unit'=>'pcs'];
     if ($action === 'edit' && $id) {
         $r = $conn->query("SELECT * FROM products WHERE id=$id LIMIT 1");
         if ($r->num_rows) $prod = $r->fetch_assoc();
+    }
+
+    // Build category prefix map for JS
+    $catPrefixes = [];
+    foreach ($categories as $cat) {
+        $catPrefixes[$cat['id']] = $cat['sku_prefix'];
     }
     ?>
     <div class="container-fluid">
@@ -111,16 +160,33 @@ if ($action === 'add' || $action === 'edit') {
                   </div>
                   <div class="col-md-6">
                     <label class="form-label">Category</label>
-                    <select name="category_id" class="form-select">
+                    <select name="category_id" id="catSelect" class="form-select">
                       <option value="">— None —</option>
                       <?php foreach ($categories as $cat): ?>
-                        <option value="<?= $cat['id'] ?>" <?= $prod['category_id']==$cat['id']?'selected':'' ?>><?= htmlspecialchars($cat['name']) ?></option>
+                        <option value="<?= $cat['id'] ?>"
+                                data-prefix="<?= htmlspecialchars($cat['sku_prefix']) ?>"
+                                <?= $prod['category_id']==$cat['id']?'selected':'' ?>>
+                          <?= htmlspecialchars($cat['name']) ?>
+                          <?php if ($cat['sku_prefix']): ?>
+                            (<?= htmlspecialchars($cat['sku_prefix']) ?>)
+                          <?php endif; ?>
+                        </option>
                       <?php endforeach; ?>
                     </select>
                   </div>
                   <div class="col-md-6">
                     <label class="form-label">SKU / Barcode</label>
-                    <input type="text" name="sku" class="form-control" value="<?= htmlspecialchars($prod['sku']) ?>">
+                    <div class="input-group">
+                      <input type="text" name="sku" id="skuInput" class="form-control"
+                             value="<?= htmlspecialchars($prod['sku']) ?>"
+                             placeholder="Select category to auto-suggest"
+                             style="text-transform:uppercase"
+                             oninput="this.value=this.value.toUpperCase().replace(/ /g,'-')">
+                      <button type="button" id="btnSuggestSku" class="btn btn-outline-secondary" title="Suggest next SKU">
+                        <i class="fas fa-magic"></i>
+                      </button>
+                    </div>
+                    <div id="skuHint" class="form-text text-muted small mt-1"></div>
                   </div>
                   <div class="col-md-4">
                     <label class="form-label">Selling Price (<?= CURRENCY ?>)</label>
@@ -217,15 +283,49 @@ if ($action === 'add' || $action === 'edit') {
           <div class="card">
             <div class="card-header">Manage Categories</div>
             <div class="card-body">
-              <form method="POST" action="categories.php" class="d-flex gap-2 mb-3">
-                <input type="text" name="name" class="form-control" placeholder="New category name...">
-                <button class="btn btn-success btn-sm px-3"><i class="fas fa-plus"></i></button>
+              <form method="POST" action="categories.php" class="mb-3">
+                <div class="row g-2 mb-1">
+                  <div class="col">
+                    <input type="text" name="name" class="form-control form-control-sm" placeholder="Category name..." required>
+                  </div>
+                  <div class="col-auto">
+                    <input type="text" name="sku_prefix" class="form-control form-control-sm"
+                           style="width:75px" placeholder="SKU-" title="SKU prefix, e.g. HBG- or TDS-">
+                  </div>
+                  <div class="col-auto">
+                    <button class="btn btn-success btn-sm px-3"><i class="fas fa-plus"></i></button>
+                  </div>
+                </div>
+                <div class="small text-muted">Name + SKU prefix (e.g. <em>Handbags</em> → <code>HBG-</code>)</div>
               </form>
               <ul class="list-group list-group-flush">
                 <?php foreach($categories as $cat): ?>
-                  <li class="list-group-item d-flex justify-content-between align-items-center py-2">
-                    <?= htmlspecialchars($cat['name']) ?>
-                    <a href="categories.php?delete=<?= $cat['id'] ?>" class="text-danger small" onclick="return confirm('Delete category?')"><i class="fas fa-trash"></i></a>
+                  <li class="list-group-item py-2 px-0">
+                    <div class="d-flex justify-content-between align-items-center">
+                      <div>
+                        <span class="fw-500"><?= htmlspecialchars($cat['name']) ?></span>
+                        <?php if ($cat['sku_prefix']): ?>
+                          <code class="ms-1 small text-primary"><?= htmlspecialchars($cat['sku_prefix']) ?></code>
+                        <?php else: ?>
+                          <span class="ms-1 small text-muted">no prefix</span>
+                        <?php endif; ?>
+                      </div>
+                      <a href="categories.php?delete=<?= $cat['id'] ?>" class="text-danger small"
+                         onclick="return confirm('Delete category?')"><i class="fas fa-trash"></i></a>
+                    </div>
+                    <!-- inline prefix edit -->
+                    <form method="POST" action="categories.php?action=update_prefix"
+                          class="d-flex gap-1 mt-1">
+                      <input type="hidden" name="id" value="<?= $cat['id'] ?>">
+                      <input type="text" name="sku_prefix"
+                             class="form-control form-control-sm"
+                             style="max-width:90px"
+                             value="<?= htmlspecialchars($cat['sku_prefix']) ?>"
+                             placeholder="SKU-">
+                      <button type="submit" class="btn btn-outline-secondary btn-sm px-2" title="Save prefix">
+                        <i class="fas fa-save"></i>
+                      </button>
+                    </form>
                   </li>
                 <?php endforeach; ?>
               </ul>
@@ -234,12 +334,79 @@ if ($action === 'add' || $action === 'edit') {
         </div>
       </div>
     </div>
+
     <?php
+    // SKU auto-suggest JS
+    ob_start(); ?>
+    <script>
+    (function(){
+      var catSelect  = document.getElementById('catSelect');
+      var skuInput   = document.getElementById('skuInput');
+      var btnSuggest = document.getElementById('btnSuggestSku');
+      var skuHint    = document.getElementById('skuHint');
+
+      // Hints per prefix pattern
+      var hints = {
+        'HBG-': 'Format: HBG-BRN, HBG-BLK, HBG-RED…',
+        'DNM-': 'Format: DNM-M-D01-32, DNM-W-D01-28…',
+        'FRK-': 'Format: FRK-D01-S, FRK-D01-M, FRK-D01-L…',
+        'LTS-': 'Format: LTS-D01-S, LTS-D01-M, LTS-D01-L…',
+        'TS-':  'Format: TS-D01-S, TS-D01-M, TS-D01-L…',
+      };
+
+      function getPrefix() {
+        var opt = catSelect.options[catSelect.selectedIndex];
+        return opt ? (opt.dataset.prefix || '') : '';
+      }
+
+      function showHint(prefix) {
+        skuHint.textContent = hints[prefix] || (prefix ? 'Next: ' + prefix + '001, ' + prefix + '002…' : '');
+      }
+
+      function suggestSku(prefix, force) {
+        if (!prefix) { skuHint.textContent = ''; return; }
+        if (!force && skuInput.value.trim()) { showHint(prefix); return; }
+        btnSuggest.disabled = true;
+        fetch('products.php?action=suggest_sku&prefix=' + encodeURIComponent(prefix))
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            if (d.sku) {
+              skuInput.value = d.sku;
+              skuInput.focus();
+              skuInput.select();
+            } else {
+              skuInput.value = prefix;
+            }
+            showHint(prefix);
+          })
+          .catch(function(){ skuInput.value = prefix; showHint(prefix); })
+          .finally(function(){ btnSuggest.disabled = false; });
+      }
+
+      catSelect.addEventListener('change', function(){
+        var prefix = getPrefix();
+        suggestSku(prefix, true);
+      });
+
+      btnSuggest.addEventListener('click', function(){
+        var prefix = getPrefix();
+        if (prefix) {
+          skuInput.value = '';
+          suggestSku(prefix, true);
+        }
+      });
+
+      // Show hint on load if category already selected
+      var existingPrefix = getPrefix();
+      if (existingPrefix) showHint(existingPrefix);
+    })();
+    </script>
+    <?php $extraJS = ob_get_clean();
     require_once 'includes/footer.php';
     exit;
 }
 
-// ── Product List ──────────────────────────────────────────────────────────────────
+// ── Product List ──────────────────────────────────────────────────────────────
 $search      = sanitize($conn, $_GET['q']      ?? '');
 $filterCat   = (int)($_GET['cat']   ?? 0);
 $filterStock = $_GET['filter'] ?? '';
